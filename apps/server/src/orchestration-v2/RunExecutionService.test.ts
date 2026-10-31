@@ -3914,6 +3914,7 @@ it.effect("delivers a held paragraph after the provider goes idle with its promp
     const providerEvents = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
     const delivered = yield* Ref.make<ReadonlyArray<string>>([]);
     const paragraphDelivered = yield* Deferred.make<void>();
+    const idleDelivered = yield* Deferred.make<void>();
     const assistantText = (text: string, streaming: boolean) =>
       [
         {
@@ -3963,6 +3964,8 @@ it.effect("delivers a held paragraph after the provider goes idle with its promp
               ]);
               if (event.type === "turn_item.updated") {
                 yield* Deferred.succeed(paragraphDelivered, undefined);
+                if (streaming && text === "First.\n\nWaiting on the build")
+                  yield* Deferred.succeed(idleDelivered, undefined);
               }
             })
           : Effect.void,
@@ -3972,6 +3975,7 @@ it.effect("delivers a held paragraph after the provider goes idle with its promp
     yield* Deferred.await(paragraphDelivered);
     // The provider keeps its prompt open while a backgrounded command runs.
     yield* TestClock.adjust("1 second");
+    yield* Deferred.await(idleDelivered);
     yield* Queue.offerAll(providerEvents, [
       ...assistantText("First.\n\nWaiting on the build to", true),
       ...assistantText("First.\n\nWaiting on the build to finish.", false),
