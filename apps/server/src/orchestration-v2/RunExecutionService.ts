@@ -1389,6 +1389,7 @@ export const layer: Layer.Layer<
         // A failed idle write keeps its text held and retries with backoff. The provider's next
         // update still writes, and fails ingestion, the normal way.
         let idleFlushFailures = 0;
+        let nextIdleFlushWarningAt = Number.NEGATIVE_INFINITY;
         const flushDueAssistantText = ingestLock.withPermits(1)(
           Effect.gen(function* () {
             if (!idleFlushClosed) {
@@ -1406,11 +1407,15 @@ export const layer: Layer.Layer<
                 if (Exit.isFailure(written)) {
                   if (Cause.hasInterruptsOnly(written.cause)) return yield* written;
                   idleFlushFailures += 1;
-                  yield* Effect.logWarning("orchestration V2 idle assistant text flush failed", {
-                    runId: input.run.id,
-                    failures: idleFlushFailures,
-                    cause: written.cause,
-                  });
+                  const failedAt = DateTime.toEpochMillis(yield* DateTime.now);
+                  if (failedAt >= nextIdleFlushWarningAt) {
+                    yield* Effect.logWarning("orchestration V2 idle assistant text flush failed", {
+                      runId: input.run.id,
+                      failures: idleFlushFailures,
+                      cause: written.cause,
+                    });
+                    nextIdleFlushWarningAt = failedAt + 10 * 60_000;
+                  }
                   const retryAt =
                     DateTime.toEpochMillis(yield* DateTime.now) +
                     Math.min(1_000 * 2 ** (idleFlushFailures - 1), 30_000);
@@ -1418,6 +1423,7 @@ export const layer: Layer.Layer<
                   break;
                 }
                 idleFlushFailures = 0;
+                nextIdleFlushWarningAt = Number.NEGATIVE_INFINITY;
                 flush.delivered(now);
                 yield* trackChildLifecycle(flush.event, true);
               }
