@@ -4222,6 +4222,7 @@ it.effect("reschedules idle text when a newer snapshot precedes a failed write's
     const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event, Cause.Done>();
     const subagentIngested = yield* Deferred.make<void>();
     const markers = yield* Queue.unbounded<void>();
+    const newerWrite = yield* Deferred.make<void>();
     const attempts = yield* Ref.make(0);
     const childWrites = yield* Ref.make<ReadonlyArray<string>>([]);
     const scenario = yield* runBackgroundItemScenario(key, () => Stream.fromQueue(events), {
@@ -4237,6 +4238,9 @@ it.effect("reschedules idle text when a newer snapshot precedes a failed write's
             return yield* Effect.die(new Error("disk I/O error"));
           const { text } = event.turnItem;
           yield* Ref.update(childWrites, (current) => [...current, text]);
+          if (text === "New partial response") {
+            yield* Deferred.succeed(newerWrite, undefined);
+          }
         }),
     }).pipe(Effect.forkChild);
     const marker = streamedMessageEvent({
@@ -4266,8 +4270,7 @@ it.effect("reschedules idle text when a newer snapshot precedes a failed write's
     ]);
     yield* Queue.take(markers);
     yield* TestClock.adjust("800 millis");
-    yield* Queue.offer(events, marker);
-    yield* Queue.take(markers);
+    yield* Deferred.await(newerWrite);
     assert.deepEqual(yield* Ref.get(childWrites), ["New partial response"]);
 
     yield* Queue.offerAll(events, [
