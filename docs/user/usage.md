@@ -6,6 +6,12 @@ desktop when the terminal is not focused. Customize `usage.open` in
 
 On mobile, choose **Usage** in the workspace navigation.
 
+On web and desktop, the bottom of the sidebar keeps subscription limits visible,
+including before you start a thread. It combines connected environments using the
+same account deduplication as Limits. Click a provider to open Limits. While the
+client is visible, readings refresh through the shared five-minute throttle;
+offline environments are excluded and marked rather than shown as fresh readings.
+
 ## Understand your usage
 
 **Usage** combines Codex, Claude Code, Grok Build, OpenCode, Antigravity, Pi, Muse Code, and Cursor history
