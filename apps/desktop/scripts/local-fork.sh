@@ -77,8 +77,7 @@ case "$action" in
     acquire
     [ "$(git remote get-url upstream)" = 'https://github.com/pingdotgg/t3code.git' ] || fail 'Unexpected upstream URL.'
     git fetch upstream main
-    git fetch origin custom/local
-    git merge --ff-only origin/custom/local
+    git fetch origin refs/heads/custom/local:refs/remotes/origin/custom/local
     stamp=$(date -u +%Y%m%dT%H%M%SZ)
     backup="backup/local-$stamp"
     git branch "$backup"
@@ -90,6 +89,7 @@ case "$action" in
     fi
     rm -f "$built"
     printf 'Recovery branch: %s\n' "$backup"
+    git merge --ff-only origin/custom/local
     if ! git -c commit.gpgsign=false merge --no-edit upstream/main; then
       fail 'Merge stopped. Resolve and commit conflicts, or use git merge --abort. No build or push was attempted.'
     fi
