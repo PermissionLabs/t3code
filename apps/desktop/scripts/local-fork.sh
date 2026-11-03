@@ -2,7 +2,7 @@
 set -euo pipefail
 umask 077
 
-repo=$(cd "$(dirname "$0")/.." && pwd -P)
+repo=$(cd "$(dirname "$0")/../../.." && pwd -P)
 cd "$repo"
 state=$(git rev-parse --absolute-git-dir)
 data="$HOME/.t3-custom"
@@ -60,7 +60,7 @@ case "$action" in
   start)
     clean
     acquire
-    [ -f "$built" ] && [ "$(cat "$built")" = "$(git rev-parse HEAD)" ] || fail 'Run local-fork/t3 build first; this revision has not passed checks and built.'
+    [ -f "$built" ] && [ "$(cat "$built")" = "$(git rev-parse HEAD)" ] || fail 'Run apps/desktop/scripts/local-fork.sh build first; this revision has not passed checks and built.'
     mkdir -p "$data"
     [ "$(cd "$data" && pwd -P)" = "$data" ] || fail 'Custom data directory must not be a symlink.'
     unset VITE_DEV_SERVER_URL VITE_HTTP_URL VITE_WS_URL ELECTRON_RUN_AS_NODE
@@ -95,7 +95,7 @@ case "$action" in
     fi
     build
     git push origin HEAD:refs/heads/custom/local
-    printf 'Updated and built. Run local-fork/t3 start. Recovery: %s\n' "$backup"
+    printf 'Updated and built. Run apps/desktop/scripts/local-fork.sh start. Recovery: %s\n' "$backup"
     ;;
-  *) fail 'Usage: local-fork/t3 {status|build|start|update}' ;;
+  *) fail 'Usage: apps/desktop/scripts/local-fork.sh {status|build|start|update}' ;;
 esac
