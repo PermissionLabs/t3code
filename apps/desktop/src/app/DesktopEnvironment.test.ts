@@ -70,6 +70,18 @@ describe("DesktopEnvironment", () => {
 
       assert.equal(development.stateDir, "/Users/alice/.t3/dev");
       assert.equal(production.stateDir, "/Users/alice/.t3/userdata");
+
+      const custom = yield* makeEnvironment(
+        {},
+        {
+          T3CODE_HOME: "/Users/alice/.t3-custom",
+          T3CODE_LOCAL_FORK: "1",
+        },
+      );
+      assert.equal(custom.stateDir, "/Users/alice/.t3-custom/userdata");
+      assert.equal(custom.appDataDirectory, "/Users/alice/.t3-custom/electron");
+      assert.notEqual(custom.appDataDirectory, production.appDataDirectory);
+      assert.equal(custom.displayName, "T3 Code (Custom)");
     }),
   );
 });

@@ -148,7 +148,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
   const homeDirectory = input.homeDirectory;
   const devServerUrl = config.devServerUrl;
   const isDevelopment = Option.isSome(devServerUrl);
-  const appDataDirectory =
+  const defaultAppDataDirectory =
     input.platform === "win32"
       ? Option.getOrElse(config.appDataDirectory, () =>
           path.join(homeDirectory, "AppData", "Roaming"),
@@ -161,6 +161,9 @@ const make = Effect.fn("desktop.environment.make")(function* (
     joinPath: path.join,
     t3Home: config.t3Home,
   });
+  const appDataDirectory = config.localFork
+    ? path.join(baseDir, "electron")
+    : defaultAppDataDirectory;
   const rootDir = path.resolve(input.dirname, "../../..");
   const appRoot = input.isPackaged ? input.appPath : rootDir;
   const serverRoot =
@@ -171,7 +174,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
     isDevelopment,
     appVersion: input.appVersion,
   });
-  const displayName = branding.displayName;
+  const displayName = config.localFork ? "T3 Code (Custom)" : branding.displayName;
   const stateDir = resolveDesktopStateDir({
     baseDir,
     isDevelopment,

@@ -7,17 +7,24 @@ import * as NodeURL from "node:url";
 import { ensureElectronRuntime } from "./ensure-electron-runtime.mjs";
 
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
+const isLocalFork = process.env.T3CODE_LOCAL_FORK === "1";
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 export const desktopDir = NodePath.resolve(__dirname, "..");
 const repoRoot = NodePath.resolve(desktopDir, "..", "..");
 const devBundleIdSuffix = NodePath.basename(repoRoot)
   .toLowerCase()
   .replaceAll(/[^a-z0-9]+/g, "");
-const APP_DISPLAY_NAME = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Beta)";
-const APP_BUNDLE_ID = isDevelopment
-  ? `com.t3tools.t3code.dev.${devBundleIdSuffix || "local"}`
-  : "com.t3tools.t3code";
-const APP_PROTOCOL_SCHEMES = isDevelopment ? ["t3code-dev"] : ["t3code"];
+const APP_DISPLAY_NAME = isLocalFork
+  ? "T3 Code (Custom)"
+  : isDevelopment
+    ? "T3 Code (Dev)"
+    : "T3 Code (Beta)";
+const APP_BUNDLE_ID = isLocalFork
+  ? "com.bamnenim.t3code.custom"
+  : isDevelopment
+    ? `com.t3tools.t3code.dev.${devBundleIdSuffix || "local"}`
+    : "com.t3tools.t3code";
+const APP_PROTOCOL_SCHEMES = isLocalFork ? [] : isDevelopment ? ["t3code-dev"] : ["t3code"];
 const LAUNCHER_VERSION = 20;
 const developmentMacIconPngPath = NodePath.join(
   repoRoot,
