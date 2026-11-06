@@ -29,6 +29,15 @@ acquire() {
   printf '%s\n' "$$" > "$lock/pid"
   trap 'rm -f "$lock/pid"; rmdir "$lock"' EXIT
 }
+stable_pattern='^v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$'
+# Latest official stable release: plain vX.Y.Z tags only, never nightly or preview.
+latest_stable() {
+  git ls-remote --tags --refs upstream 'v*' | sed 's|.*refs/tags/||' | grep -E "$stable_pattern" | sort -V | tail -n 1
+}
+# Stable release this checkout is based on; checks and status compare against it.
+merged_stable() {
+  git tag --merged HEAD --list 'v*' | grep -E "$stable_pattern" | sort -V | tail -n 1
+}
 vp() {
   if [ -x ./node_modules/.bin/vp ]; then
     ./node_modules/.bin/vp "$@"
@@ -39,8 +48,9 @@ vp() {
 }
 build() {
   rm -f "$built"
+  base=$(merged_stable) || fail 'No stable release tag found. Run: git fetch upstream --tags'
   vp install --frozen-lockfile
-  vp run check:changed upstream/main --concurrency 2
+  vp run check:changed "$base" --concurrency 2
   vp run build:desktop
   git rev-parse HEAD > "$built"
 }
@@ -50,7 +60,7 @@ case "$action" in
     git status --short --branch
     printf 'Source: %s\nData: %s\n' "$repo" "$data"
     printf 'Built commit: '; cat "$built" 2>/dev/null || true
-    git log -1 --format='Upstream: %h %s' upstream/main
+    printf 'Based on stable: %s\n' "$(merged_stable || printf unknown)"
     ;;
   build)
     clean
@@ -76,7 +86,8 @@ case "$action" in
     clean
     acquire
     [ "$(git remote get-url upstream)" = 'https://github.com/pingdotgg/t3code.git' ] || fail 'Unexpected upstream URL.'
-    git fetch upstream main
+    stable=$(latest_stable) || fail 'Could not find an official stable release.'
+    git fetch upstream "refs/tags/$stable:refs/tags/$stable"
     git fetch origin refs/heads/custom/local:refs/remotes/origin/custom/local
     stamp=$(date -u +%Y%m%dT%H%M%SZ)
     backup="backup/local-$stamp"
@@ -90,7 +101,7 @@ case "$action" in
     rm -f "$built"
     printf 'Recovery branch: %s\n' "$backup"
     git merge --ff-only origin/custom/local
-    if ! git -c commit.gpgsign=false merge --no-edit upstream/main; then
+    if ! git -c commit.gpgsign=false merge --no-edit "refs/tags/$stable"; then
       fail 'Merge stopped. Resolve and commit conflicts, or use git merge --abort. No build or push was attempted.'
     fi
     build

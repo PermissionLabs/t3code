@@ -11,7 +11,7 @@ git clone https://github.com/bamnenim-permissionlabs/t3code.git
 cd t3code
 git remote add upstream https://github.com/pingdotgg/t3code.git
 git remote set-url --push upstream DISABLED
-git fetch upstream main
+git fetch upstream --tags
 git switch custom/local
 ./apps/desktop/scripts/local-fork.sh build
 ./apps/desktop/scripts/local-fork.sh start
@@ -40,7 +40,7 @@ Quit Custom, commit any intentional source edits on `custom/local`, then run:
 ./apps/desktop/scripts/local-fork.sh start
 ```
 
-`update` fetches the official **main** branch, fast-forwards from the fork's `custom/local`, creates a local `backup/local-<timestamp>` branch and (when present) a private local data archive in `~/.t3-custom-backups`, merges upstream, installs locked dependencies, runs changed-file checks, builds, and pushes only `custom/local` to the fork. Upstream `main` is the newest development code, not a stability guarantee. This is an explicit update command, not an unattended schedule.
+`update` fetches the latest official **stable release** (a plain `vX.Y.Z` tag, never nightly or preview), fast-forwards from the fork's `custom/local`, creates a local `backup/local-<timestamp>` branch and (when present) a private local data archive in `~/.t3-custom-backups`, merges that release, installs locked dependencies, runs changed-file checks, builds, and pushes only `custom/local` to the fork. This keeps the fork on the same release train as stable servers on other machines. To move to a newer release, wait for the next stable tag. This is an explicit update command, not an unattended schedule.
 
 The app and update/build command share a lock. Dirty worktrees, merge conflicts, or failed checks/builds stop the process. A build marker prevents launching a revision whose build failed. No force-push or automatic conflict resolution is used. Local merge commits are unsigned so updates do not require personal signing-key access.
 
@@ -48,4 +48,4 @@ If a merge conflicts, resolve it and commit, then run `./apps/desktop/scripts/lo
 
 If a completed update is unsuitable, inspect the recovery branch named in `.git/local-fork-backup`. Preserve any new edits and ask an agent to recover onto a new branch; do not blindly reset the shared custom branch. Code rollback and database rollback are separate: an older build may not understand a migrated database. Restore the matching data archive only with the app stopped, after preserving the current data. Backups may contain secrets and stay local; review disk usage and remove old backups when no longer needed.
 
-`./apps/desktop/scripts/local-fork.sh status` reports the checkout, last built commit, and last fetched upstream revision. Future modifications should stay on small branches based on `custom/local` and merge back after verification. Keep changes narrowly scoped to reduce upstream conflicts. If the official product eventually covers the same need, remove the redundant local patch.
+`./apps/desktop/scripts/local-fork.sh status` reports the checkout, last built commit, and the stable release it is based on. Future modifications should stay on small branches based on `custom/local` and merge back after verification. Keep changes narrowly scoped to reduce upstream conflicts. If the official product eventually covers the same need, remove the redundant local patch.
