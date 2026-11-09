@@ -48,6 +48,7 @@ import {
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2RemoteTaskChild,
+  type OrchestrationV2DelegatedTaskChildState,
   type OrchestrationV2ModelSwitch,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
@@ -117,7 +118,7 @@ import {
   visibleConversationItems,
   visibleDeltaRunOrdinals,
 } from "./ContextHandoffService.ts";
-import { notificationTurnItem } from "@t3tools/provider-core/server/notification";
+import { notificationTurnItem, reportLabel } from "@t3tools/provider-core/server/notification";
 import {
   cancelledBeforeStart,
   continuationFailedBeforePrompt,
@@ -601,6 +602,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "delegated_task.remote.request":
     case "delegated_task.remote.complete":
     case "delegated_task.remote.stop":
+    case "delegated_task.child-lifecycle":
     case "delegated_task.wake-policy":
     case "delegated_task.completion-delivery.acknowledge":
     case "delegated_task.completion-delivery.dispose":
@@ -761,6 +763,26 @@ function delegatedCompletionWakeDetail(
       return `${label}. Use task_status with taskId ${taskId} to read the result.`;
     })
     .join("\n\n");
+}
+
+const DELEGATED_CHILD_STATE_WORDS = {
+  active: "is active again",
+  settled: "was settled",
+  archived: "was archived",
+  deleted: "was deleted",
+} as const satisfies Record<OrchestrationV2DelegatedTaskChildState, string>;
+
+function delegatedTaskChildLifecycleNotice(
+  task: OrchestrationV2Subagent,
+  state: OrchestrationV2DelegatedTaskChildState,
+): { readonly text: string; readonly summary: string } {
+  const label = reportLabel(task.title ?? task.prompt);
+  const threadId = task.childThreadId ?? task.remoteChild?.threadId;
+  const where = task.remoteChild === undefined ? "" : ` in ${task.remoteChild.label}`;
+  return {
+    text: `Delegated task ${task.id}${label === undefined ? "" : ` (${label})`} [${task.status}]: its thread${threadId === undefined ? "" : ` ${threadId}`}${where} ${DELEGATED_CHILD_STATE_WORDS[state]}. The task's result is unchanged.`,
+    summary: `Delegated task${label === undefined ? "" : ` "${label}"`} thread ${DELEGATED_CHILD_STATE_WORDS[state]}`,
+  };
 }
 
 function isTerminalDelegatedTaskStatus(status: OrchestrationV2Subagent["status"]): boolean {
@@ -1397,6 +1419,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         delivery.taskIds.length === 0 ||
         controls.thread.archivedAt !== null ||
         controls.thread.deletedAt !== null
+      )
+        return;
+      // Held while the user has the parent settled; unsettling or pinning offers it again.
+      if (
+        controls.thread.settledOverride === "settled" &&
+        (yield* serverSettings.getSettings.pipe(Effect.orDie)).delegatedTaskLifecycle
       )
         return;
       const messages = yield* projectionStore.getThreadRecords(threadId, ["messages"], {
@@ -8485,6 +8513,93 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     yield* emitRemoteStopOwed(events, command, task, task.remoteChild);
   });
 
+  /**
+   * Records what a delegated task's thread became and queues a notice to the parent agent.
+   * A settled, archived or deleted parent only records it: waking it would undo the user
+   * putting it away.
+   */
+  const dispatchDelegatedTaskChildLifecycle = Effect.fn(
+    "orchestrationV2.dispatch.delegatedTaskChildLifecycle",
+  )(function* (
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "delegated_task.child-lifecycle" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const { thread, subagents } = yield* projectionStore
+      .getThreadRecords(command.parentThreadId, ["subagents"], { subagentIds: [command.taskId] })
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: command.parentThreadId, cause }),
+        ),
+      );
+    const task = subagents.find(
+      (candidate) => candidate.id === command.taskId && candidate.origin === "app_owned",
+    );
+    if (task === undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Delegated task ${command.taskId} is not an app-owned task of thread ${command.parentThreadId}.`,
+      });
+    }
+    // An unchanged state records nothing, which the dispatcher refuses.
+    if ((task.childLifecycle?.state ?? "active") === command.state) return;
+    const now = yield* DateTime.now;
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "subagent.updated",
+      threadId: command.parentThreadId,
+      ...(task.runId === null ? {} : { runId: task.runId }),
+      nodeId: task.id,
+      driver: task.driver,
+      occurredAt: now,
+      payload: {
+        ...task,
+        // Stamped with this event's time, so hooks can tell the change from later rewrites.
+        childLifecycle: { state: command.state, changedAt: now },
+        updatedAt: now,
+      },
+    });
+    if (
+      thread.archivedAt !== null ||
+      thread.deletedAt !== null ||
+      thread.settledOverride === "settled" ||
+      thread.settledAt !== null
+    ) {
+      return;
+    }
+    const notice = delegatedTaskChildLifecycleNotice(task, command.state);
+    yield* dispatchMessage(
+      {
+        type: "message.dispatch",
+        commandId: command.commandId,
+        threadId: command.parentThreadId,
+        messageId: MessageId.make(`message:delegated-task-lifecycle:${command.commandId}`),
+        text: notice.text,
+        notification: {
+          source: {
+            kind: "delegated_task",
+            taskIds: [task.id],
+            ...(task.childThreadId === null ? {} : { childThreadId: task.childThreadId }),
+          },
+          outcome: "updated",
+          summary: notice.summary,
+        },
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "agent",
+        creationSource: "server",
+      },
+      events,
+      effects,
+    );
+  });
+
   const emitRemoteStopOwed = Effect.fn("orchestrationV2.dispatch.remoteStopOwed")(function* (
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     command: Extract<
@@ -13453,6 +13568,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "delegated_task.remote.stop":
         yield* dispatchRemoteDelegatedTaskStop(command, events);
         break;
+      case "delegated_task.child-lifecycle":
+        yield* dispatchDelegatedTaskChildLifecycle(command, events, effects);
+        break;
       case "delegated_task.wake-policy":
         updateDelegatedCompletionOnlyRunId = yield* dispatchDelegatedTaskWakePolicy(
           command,
@@ -13718,7 +13836,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
     }
-    if (command.type === "notification.delivery.accept") {
+    if (
+      command.type === "notification.delivery.accept" ||
+      command.type === "thread.unsettle" ||
+      command.type === "thread.pin"
+    ) {
       yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.threadId));
     }
     if (

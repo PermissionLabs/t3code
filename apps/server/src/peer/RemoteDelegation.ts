@@ -15,12 +15,14 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import type * as Tool from "effect/ai/Tool";
@@ -35,6 +37,7 @@ import {
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -56,6 +59,14 @@ export const FollowRetrySchedule = Context.Reference<Schedule.Schedule<unknown>>
         ),
       ),
   },
+);
+
+/** How long a finished task's thread there is followed for settling, archiving or deletion. */
+const LIFECYCLE_FOLLOW_DAYS = 14;
+/** How often a finished task's thread there is checked; tests step it by hand. */
+export const LifecyclePollSchedule = Context.Reference<Schedule.Schedule<unknown>>(
+  "t3/peer/RemoteDelegation/LifecyclePollSchedule",
+  { defaultValue: () => Schedule.spaced(Duration.minutes(1)) },
 );
 
 type ThreadScope = McpInvocationContext.McpThreadInvocationScope;
@@ -93,6 +104,8 @@ export class RemoteDelegation extends Context.Service<
     /**
      * Follows every open remote task until it ends, including after a
      * restart, and a finished one again when a Stop here owes it a stop there.
+     * With `delegatedTaskLifecycle` on, a finished task's thread there is
+     * then followed until it is archived or deleted, to tell the parent.
      */
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
   }
@@ -108,6 +121,8 @@ const isModeRefusal = (error: OrchestratorMcpFailure) =>
  * or forgotten, or the thread or run there is gone. Anything else (the other
  * machine asleep, a dropped route) is worth retrying.
  */
+const isMcpFailure = Schema.is(OrchestratorMcpFailure);
+
 const isFinal = (error: OrchestratorMcpFailure) =>
   error.code === "capability_denied" ||
   error.code === "thread_not_found" ||
@@ -115,6 +130,8 @@ const isFinal = (error: OrchestratorMcpFailure) =>
 
 const make = Effect.gen(function* () {
   const followRetry = yield* FollowRetrySchedule;
+  const lifecyclePoll = yield* LifecyclePollSchedule;
+  const settings = yield* ServerSettings.ServerSettingsService;
   const forwarding = yield* PeerForwarding.PeerForwarding;
   const links = yield* PeerLinks.PeerLinks;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -650,6 +667,87 @@ const make = Effect.gen(function* () {
       Effect.map(({ task }) => task?.remoteChild?.stoppedThere === true),
     );
 
+  /**
+   * One look at a finished task's thread there; true once there is nothing
+   * left to follow. A changed state is recorded on the task, which tells the
+   * parent; a refused record (the state was already recorded) is fine.
+   */
+  const lifecycleOnce = Effect.fn("RemoteDelegation.lifecycleOnce")(function* (
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+  ) {
+    if (!(yield* settings.getSettings).delegatedTaskLifecycle) return true;
+    const { thread, task } = yield* readTask(parentThreadId, taskId);
+    if (task?.remoteChild === undefined || task.result === null) return true;
+    if (thread.archivedAt !== null || thread.deletedAt !== null) return true;
+    const recorded = task.childLifecycle?.state ?? "active";
+    if (recorded === "archived" || recorded === "deleted") return true;
+    const now = yield* DateTime.now;
+    if (
+      task.completedAt !== null &&
+      DateTime.toEpochMillis(now) - DateTime.toEpochMillis(task.completedAt) >
+        Duration.toMillis(Duration.days(LIFECYCLE_FOLLOW_DAYS))
+    ) {
+      return true;
+    }
+    const remote = task.remoteChild;
+    const scope = followScope(
+      { threadId: parentThreadId, providerInstanceId: thread.providerInstanceId },
+      remote,
+    );
+    const state = yield* forwarding
+      .readThread(scope, remote.environmentId, { threadId: remote.threadId, limit: 1, runLimit: 1 })
+      .pipe(
+        Effect.map(({ thread: there }) =>
+          there.archived
+            ? ("archived" as const)
+            : there.settled
+              ? ("settled" as const)
+              : ("active" as const),
+        ),
+        Effect.catchIf(
+          (error) => error.code === "thread_not_found",
+          () => Effect.succeed("deleted" as const),
+        ),
+      );
+    if (state !== recorded) {
+      const attempt = yield* random.uuidV4();
+      yield* threads
+        .dispatch({
+          type: "delegated_task.child-lifecycle",
+          commandId: CommandId.make(`command:remote-task-lifecycle:${taskId}:${state}:${attempt}`),
+          parentThreadId,
+          taskId,
+          state,
+        })
+        .pipe(Effect.ignoreCause({ log: true }));
+    }
+    return state === "archived" || state === "deleted";
+  });
+
+  const followingLifecycle = new Set<NodeId>();
+
+  /**
+   * Polls a finished task's thread there until it is archived or deleted, at
+   * most once per task. A link refused for good ends it; an unreachable
+   * machine is retried with back-off.
+   */
+  const followLifecycle = (parentThreadId: ThreadId, taskId: NodeId) =>
+    Effect.suspend(() => {
+      if (followingLifecycle.has(taskId)) return Effect.void;
+      followingLifecycle.add(taskId);
+      return lifecycleOnce(parentThreadId, taskId).pipe(
+        Effect.repeat({ while: (done) => !done, schedule: lifecyclePoll }),
+        Effect.catchIf(
+          (error) => isMcpFailure(error) && isFinal(error),
+          () => Effect.void,
+        ),
+        Effect.retry(followRetry),
+        Effect.ignoreCause({ log: true }),
+        Effect.ensuring(Effect.sync(() => followingLifecycle.delete(taskId))),
+      );
+    });
+
   const following = new Map<NodeId, { again: boolean }>();
 
   /**
@@ -683,6 +781,7 @@ const make = Effect.gen(function* () {
             if (following.get(taskId) === state) following.delete(taskId);
           }),
         ),
+        Effect.andThen(followLifecycle(parentThreadId, taskId)),
       );
     });
 
@@ -774,9 +873,19 @@ const make = Effect.gen(function* () {
           Effect.forkIn(followers, { startImmediately: true }),
         );
         const open = yield* projections.getOpenRemoteDelegatedTasks;
+        const finished = (yield* settings.getSettings).delegatedTaskLifecycle
+          ? yield* projections.getFinishedRemoteDelegatedTasks(
+              DateTime.subtract(yield* DateTime.now, { days: LIFECYCLE_FOLLOW_DAYS }),
+            )
+          : [];
         yield* Effect.forEach(
-          open,
-          ({ parentThreadId, taskId }) => followOne(parentThreadId, taskId),
+          [
+            ...open.map(({ parentThreadId, taskId }) => followOne(parentThreadId, taskId)),
+            ...finished
+              .filter((task) => !open.some((entry) => entry.taskId === task.taskId))
+              .map(({ parentThreadId, taskId }) => followLifecycle(parentThreadId, taskId)),
+          ],
+          (follower) => follower,
           {
             concurrency: "unbounded",
             discard: true,

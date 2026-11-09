@@ -204,6 +204,16 @@ rules to connected environments that support shared settings. Offline environmen
 and older servers keep their previous values. Changing a rule does not reopen
 already settled threads.
 
+### Settling delegated work
+
+When an agent delegates a task, settling the parent thread does not stop the task. By default
+the task's result still wakes the parent, which un-settles it. To treat settling as putting the
+work away, set `"delegatedTaskLifecycle": true` in the environment's `settings.json`. Then a
+settled parent is not woken: its results wait and are delivered if you un-settle or pin it. The
+parent agent is also told when you settle, un-settle, archive, or delete a task's own thread,
+including a task on a linked machine, which is checked about once a minute for 14 days after it
+finishes.
+
 ## Link a pull request
 
 The server finds the PR for each unsettled thread's saved branch, even when your

@@ -110,6 +110,8 @@ interface BoxThread {
   readonly nestedSettled: Deferred.Deferred<void>;
   /** Waiting there fails with this, as a thread deleted there does. */
   readonly gone: Ref.Ref<boolean>;
+  /** What the user made of the thread there once it ended. */
+  readonly lifecycle: Ref.Ref<"active" | "settled" | "archived">;
   readonly interrupted: Ref.Ref<number>;
   /** What each interrupt or stop there did, once per command id. */
   readonly stops: Ref.Ref<ReadonlyArray<"interrupt" | "thread.stop" | "delegated-tasks">>;
@@ -150,6 +152,7 @@ const makeBoxThread = Effect.gen(function* () {
     nestedWaiting: yield* Deferred.make<void>(),
     nestedSettled: yield* Deferred.make<void>(),
     gone: yield* Ref.make(false),
+    lifecycle: yield* Ref.make<"active" | "settled" | "archived">("active"),
     interrupted: yield* Ref.make(0),
     stops: yield* Ref.make<ReadonlyArray<"interrupt" | "thread.stop" | "delegated-tasks">>([]),
     runless: yield* Ref.make(false),
@@ -213,10 +216,16 @@ const boxToolkitLayer = (thread: BoxThread) => {
     Effect.gen(function* () {
       if ((yield* Ref.get(thread.launched)) !== threadId) return null;
       const linkOrigin = yield* Ref.get(thread.linkOrigin);
+      const lifecycle = yield* Ref.get(thread.lifecycle);
       return {
         ...liveThreadShell(threadId, { runtimeMode: "full-access" }),
         projectId: boxProject,
         ...(linkOrigin === null ? {} : { linkOrigin }),
+        ...(lifecycle === "settled"
+          ? { settledOverride: "settled" as const, settledAt: DateTime.makeUnsafe(0) }
+          : lifecycle === "archived"
+            ? { archivedAt: DateTime.makeUnsafe(0) }
+            : {}),
       };
     });
   const runOf = (status: OrchestrationV2Run["status"]) =>
@@ -1883,6 +1892,72 @@ it.effect("a task cancelled while the box is unreachable is stopped there after 
       expect(yield* Ref.get(thread.stops)).toEqual(["thread.stop", "delegated-tasks"]);
       // The result here is still the cancel's.
       expect(yield* taskResult(after, delegated.taskId)).toMatchObject({ status: "cancelled" });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a finished task tells its parent when its thread there is settled, then deleted", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      // Each look at the thread there waits for the test to allow the next one.
+      const polls = yield* steppedRetries;
+      const a = yield* makeLaptop(database, offers).pipe(
+        Effect.provideService(RemoteDelegation.LifecyclePollSchedule, polls.schedule),
+      );
+      yield* a.settings.updateSettings({ delegatedTaskLifecycle: true });
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const delegated = yield* delegateToBox(a);
+      yield* Ref.set(thread.reply, "Suite green.");
+      yield* Ref.set(thread.status, "completed");
+      yield* Deferred.succeed(thread.finished, undefined);
+      expect(yield* taskResult(a, delegated.taskId)).toMatchObject({ status: "completed" });
+      // The first look finds it active, which is what the task already assumes.
+      yield* Queue.take(polls.failed);
+      const lifecycleOf = (state: string) =>
+        a.orchestrator
+          .streamStoredEventsFrom({
+            threadId: parentThreadId,
+            afterSequence: 0,
+            eventType: "subagent.updated",
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "subagent.updated" &&
+                stored.event.payload.id === delegated.taskId &&
+                stored.event.payload.childLifecycle?.state === state,
+            ),
+            Stream.runHead,
+          );
+
+      yield* Ref.set(thread.lifecycle, "settled");
+      yield* Queue.offer(polls.retry, undefined);
+      yield* lifecycleOf("settled");
+      yield* Queue.take(polls.failed);
+      const notices = (yield* a.orchestrator.getThreadProjection(parentThreadId)).messages.filter(
+        (message) => message.notification?.source.kind === "delegated_task",
+      );
+      expect(notices.map((message) => message.text)).toEqual([
+        expect.stringContaining(
+          `its thread ${delegated.remoteChild.threadId} in ${delegated.remoteChild.label} was settled`,
+        ),
+      ]);
+      // A restart picks the finished task up again until its thread there is gone.
+      const finished = a.projections.getFinishedRemoteDelegatedTasks(DateTime.makeUnsafe(0));
+      expect(yield* finished).toEqual([{ parentThreadId, taskId: delegated.taskId }]);
+
+      // Deleted there: recorded, and nothing is left to follow.
+      yield* Ref.set(thread.launched, null);
+      yield* Queue.offer(polls.retry, undefined);
+      yield* lifecycleOf("deleted");
+      expect(yield* finished).toEqual([]);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

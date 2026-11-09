@@ -611,6 +611,27 @@ export const OrchestrationV2DelegatedCompletionTaskDeliveryState = Schema.Litera
 export type OrchestrationV2DelegatedCompletionTaskDeliveryState =
   typeof OrchestrationV2DelegatedCompletionTaskDeliveryState.Type;
 
+/**
+ * What a delegated task's own thread (here or in a linked environment) last
+ * became after the user or a sweep acted on it. `active` is a thread unsettled
+ * or unarchived again; a task without a recorded state has an active thread.
+ */
+export const OrchestrationV2DelegatedTaskChildState = Schema.Literals([
+  "active",
+  "settled",
+  "archived",
+  "deleted",
+]);
+export type OrchestrationV2DelegatedTaskChildState =
+  typeof OrchestrationV2DelegatedTaskChildState.Type;
+
+export const OrchestrationV2DelegatedTaskChildLifecycle = Schema.Struct({
+  state: OrchestrationV2DelegatedTaskChildState,
+  changedAt: Schema.DateTimeUtc,
+});
+export type OrchestrationV2DelegatedTaskChildLifecycle =
+  typeof OrchestrationV2DelegatedTaskChildLifecycle.Type;
+
 export const OrchestrationV2DelegatedCompletionTaskDelivery = Schema.Struct({
   state: OrchestrationV2DelegatedCompletionTaskDeliveryState,
   observedByRunId: Schema.NullOr(RunId),
@@ -900,6 +921,7 @@ export const OrchestrationV2Subagent = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
   completionDelivery: Schema.optional(OrchestrationV2DelegatedCompletionTaskDelivery),
+  childLifecycle: Schema.optional(OrchestrationV2DelegatedTaskChildLifecycle),
   status: Schema.Literals([
     "idle",
     "pending",
@@ -2324,6 +2346,12 @@ export type OrchestrationV2ExecutionNodeJson = typeof OrchestrationV2ExecutionNo
 
 export const OrchestrationV2SubagentJson = OrchestrationV2Subagent.mapFields((fields) => ({
   ...fields,
+  childLifecycle: Schema.optional(
+    OrchestrationV2DelegatedTaskChildLifecycle.mapFields((lifecycle) => ({
+      ...lifecycle,
+      changedAt: Schema.DateTimeUtcFromString,
+    })),
+  ),
   startedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   completedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   updatedAt: Schema.DateTimeUtcFromString,
@@ -3464,6 +3492,18 @@ const OrchestrationV2InternalCommand = Schema.Union([
     stoppedThere: Schema.optional(Schema.Literals(["ran-out", "stopped"])),
     /** The stop generation this report acknowledges; absent for the original unnumbered stop. */
     stopCount: Schema.optional(NonNegativeInt),
+  }),
+  /**
+   * Records what a delegated task's own thread became (settled, active again, archived or
+   * deleted) and tells the parent agent, unless the parent is settled, archived or deleted.
+   * A state the task already has records nothing.
+   */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.child-lifecycle"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    state: OrchestrationV2DelegatedTaskChildState,
   }),
   /**
    * Owes a stop to the thread there of a remote task that already has its result, as Stop on
