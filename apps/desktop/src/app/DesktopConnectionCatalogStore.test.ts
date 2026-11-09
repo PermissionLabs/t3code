@@ -1,4 +1,7 @@
-import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+// @effect-diagnostics nodeBuiltinImport:off - builds Chromium OSCrypt fixtures.
+import * as NodeCrypto from "node:crypto";
+
+import * as EffectNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { ConnectionCatalogDocument } from "@t3tools/client-runtime/platform";
@@ -13,10 +16,12 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
 import * as ElectronSafeStorage from "../electron/ElectronSafeStorage.ts";
+import { decryptChromiumValue } from "../preview/BrowserImport/ChromiumCookies.ts";
 import * as DesktopSavedEnvironments from "../settings/DesktopSavedEnvironments.ts";
 import * as DesktopConfig from "./DesktopConfig.ts";
 import * as DesktopConnectionCatalogStore from "./DesktopConnectionCatalogStore.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
+import * as DesktopLegacySafeStorage from "./DesktopLegacySafeStorage.ts";
 
 const textDecoder = new TextDecoder();
 const textEncoder = new TextEncoder();
@@ -50,11 +55,52 @@ function layerSafeStorageFor(available: boolean, failDecrypt: Ref.Ref<boolean> |
   } satisfies ElectronSafeStorage.ElectronSafeStorage["Service"]);
 }
 
+const LEGACY_SECRET = "dev-run-electron-secret";
+const deriveLegacyKey = (secret: string) =>
+  NodeCrypto.pbkdf2Sync(secret, "saltysalt", 1003, 16, "sha1");
+
+/** Chromium OSCrypt on macOS: "v10" + AES-128-CBC, PBKDF2-SHA1 key, IV of 16 spaces. */
+function encryptLikeDevRun(plaintext: string, secret = LEGACY_SECRET): Uint8Array {
+  const cipher = NodeCrypto.createCipheriv(
+    "aes-128-cbc",
+    deriveLegacyKey(secret),
+    Buffer.alloc(16, 0x20),
+  );
+  return Buffer.concat([Buffer.from("v10"), cipher.update(plaintext, "utf8"), cipher.final()]);
+}
+
+/** The real decrypt path, with the Keychain read replaced by a fixed secret. */
+function layerLegacySafeStorageFor(enabled: boolean, keychain: Ref.Ref<number> | null = null) {
+  return Layer.succeed(
+    DesktopLegacySafeStorage.DesktopLegacySafeStorage,
+    DesktopLegacySafeStorage.DesktopLegacySafeStorage.of({
+      enabled,
+      decrypt: (value) =>
+        Effect.gen(function* () {
+          if (!enabled || !DesktopLegacySafeStorage.isChromiumMacCiphertext(value)) {
+            return Option.none<string>();
+          }
+          if (keychain !== null) yield* Ref.update(keychain, (count) => count + 1);
+          return Option.fromNullishOr(
+            decryptChromiumValue(
+              value,
+              { cbcV10: deriveLegacyKey(LEGACY_SECRET) },
+              "",
+              23,
+              "darwin",
+            ),
+          );
+        }),
+    }),
+  );
+}
+
 function layerFor(
   baseDir: string,
   encryptionAvailable = true,
   failDecrypt: Ref.Ref<boolean> | null = null,
   fileSystemLayer: Layer.Layer<FileSystem.FileSystem> = NodeServices.layer,
+  legacyLayer: Layer.Layer<DesktopLegacySafeStorage.DesktopLegacySafeStorage> = DesktopLegacySafeStorage.layerDisabled,
 ) {
   const layerEnvironment = DesktopEnvironment.layer({
     dirname: "/repo/apps/desktop/src",
@@ -75,8 +121,9 @@ function layerFor(
   const layerDependencies = Layer.mergeAll(
     layerEnvironment,
     layerSafeStorage,
+    legacyLayer,
     NodeServices.layer,
-    NodeCrypto.layer,
+    EffectNodeCrypto.layer,
     fileSystemLayer,
   );
   const layerSavedEnvironments = DesktopSavedEnvironments.layer.pipe(
@@ -300,4 +347,123 @@ describe("DesktopConnectionCatalogStore", () => {
       assert.deepStrictEqual(yield* store.get, Option.some('{"schemaVersion":1,"targets":[]}'));
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
+  describe("dev-run safe storage key migration", () => {
+    const catalog = '{"schemaVersion":1,"targets":[{"label":"devbox"}]}';
+
+    const withLegacyStore = <A, E, R>(
+      enabled: boolean,
+      body: (input: {
+        readonly catalogPath: string;
+        readonly stateDir: string;
+        readonly keychainReads: Ref.Ref<number>;
+      }) => Effect.Effect<A, E, R>,
+    ) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-desktop-connection-catalog-test-",
+        });
+        const keychainReads = yield* Ref.make(0);
+        const stateDir = path.join(baseDir, "userdata");
+        const catalogPath = path.join(stateDir, "connection-catalog.json");
+        yield* fileSystem.makeDirectory(stateDir, { recursive: true });
+        return yield* body({ catalogPath, stateDir, keychainReads }).pipe(
+          Effect.provide(
+            layerFor(
+              baseDir,
+              true,
+              null,
+              NodeServices.layer,
+              layerLegacySafeStorageFor(enabled, keychainReads),
+            ),
+          ),
+        );
+      }).pipe(Effect.provide(NodeServices.layer), Effect.scoped);
+
+    const writeDevRunCatalog = (catalogPath: string, value: string) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const document = JSON.stringify({
+          version: 1,
+          encryptedCatalog: Base64.encode(encryptLikeDevRun(value)),
+        });
+        yield* fileSystem.writeFileString(catalogPath, document);
+        return document;
+      });
+
+    it.effect("re-encrypts a dev-run catalog once and keeps the original as a backup", () =>
+      withLegacyStore(true, ({ catalogPath, stateDir, keychainReads }) =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore;
+          const original = yield* writeDevRunCatalog(catalogPath, catalog);
+
+          const [first, second] = yield* Effect.all([store.get, store.get], {
+            concurrency: "unbounded",
+          });
+          assert.deepStrictEqual(first, Option.some(catalog));
+          assert.deepStrictEqual(second, Option.some(catalog));
+          assert.deepStrictEqual(yield* store.get, Option.some(catalog));
+          assert.equal(yield* Ref.get(keychainReads), 1);
+
+          const rewritten = JSON.parse(yield* fileSystem.readFileString(catalogPath));
+          assert.equal(
+            textDecoder.decode(yield* Effect.fromResult(Base64.decode(rewritten.encryptedCatalog))),
+            `encrypted:${catalog}`,
+          );
+          const backups = (yield* fileSystem.readDirectory(stateDir)).filter((name) =>
+            name.startsWith("connection-catalog.json.bak-"),
+          );
+          assert.lengthOf(backups, 1);
+          assert.equal(yield* fileSystem.readFileString(`${stateDir}/${backups[0]}`), original);
+        }),
+      ),
+    );
+
+    it.effect("leaves the catalog untouched when migration is not enabled", () =>
+      withLegacyStore(false, ({ catalogPath, stateDir, keychainReads }) =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore;
+          const original = yield* writeDevRunCatalog(catalogPath, catalog);
+
+          const error = yield* store.get.pipe(Effect.flip);
+          assert.instanceOf(
+            error,
+            DesktopConnectionCatalogStore.DesktopConnectionCatalogStoreProtectionError,
+          );
+          assert.equal(yield* Ref.get(keychainReads), 0);
+          assert.equal(yield* fileSystem.readFileString(catalogPath), original);
+          assert.deepStrictEqual(yield* fileSystem.readDirectory(stateDir), [
+            "connection-catalog.json",
+          ]);
+        }),
+      ),
+    );
+
+    it.effect("does not rewrite a catalog the dev-run key cannot decrypt", () =>
+      withLegacyStore(true, ({ catalogPath, stateDir }) =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore;
+          const document = JSON.stringify({
+            version: 1,
+            encryptedCatalog: Base64.encode(encryptLikeDevRun(catalog, "someone-else")),
+          });
+          yield* fileSystem.writeFileString(catalogPath, document);
+
+          const error = yield* store.get.pipe(Effect.flip);
+          assert.instanceOf(
+            error,
+            DesktopConnectionCatalogStore.DesktopConnectionCatalogStoreProtectionError,
+          );
+          assert.equal(yield* fileSystem.readFileString(catalogPath), document);
+          assert.deepStrictEqual(yield* fileSystem.readDirectory(stateDir), [
+            "connection-catalog.json",
+          ]);
+        }),
+      ),
+    );
+  });
 });

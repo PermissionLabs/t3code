@@ -76,6 +76,14 @@ const readKeychainSecret = Effect.fn("ChromiumKeys.readKeychainSecret")(function
   return secret;
 });
 
+/** macOS OSCrypt ("<app> Safe Storage") key material; the secret never leaves this process. */
+export const resolveMacSafeStorageKeys = Effect.fn("ChromiumKeys.resolveMacSafeStorageKeys")(
+  function* (service: string, account: string) {
+    const secret = yield* readKeychainSecret(service, account);
+    return { cbcV10: derive(secret, MAC_KEY_ITERATIONS) } satisfies ChromiumKeyMaterial;
+  },
+);
+
 /** Exit codes distinguish missing keys, denied access, and unavailable keyrings without localized message parsing. */
 export const readLinuxSecret = Effect.fn("ChromiumKeys.readLinuxSecret")(function* (
   application: string,
@@ -245,8 +253,7 @@ export const resolveChromiumKeys = Effect.fn("ChromiumKeys.resolveChromiumKeys")
     if (!request.keychainService || !request.keychainAccount) {
       return yield* new ChromiumKeyError({ reason: "unsupportedPlatform" });
     }
-    const secret = yield* readKeychainSecret(request.keychainService, request.keychainAccount);
-    return { cbcV10: derive(secret, MAC_KEY_ITERATIONS) };
+    return yield* resolveMacSafeStorageKeys(request.keychainService, request.keychainAccount);
   }
 
   if (request.platform === "linux") {

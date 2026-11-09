@@ -13,6 +13,7 @@ import {
 import type { PersistedSavedEnvironmentRecord } from "@t3tools/contracts";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Base64 from "effect/encoding/Base64";
@@ -21,10 +22,15 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 
 import * as ElectronSafeStorage from "../electron/ElectronSafeStorage.ts";
 import * as DesktopSavedEnvironments from "../settings/DesktopSavedEnvironments.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
+import * as DesktopLegacySafeStorage from "./DesktopLegacySafeStorage.ts";
+import { makeComponentLogger } from "./DesktopObservability.ts";
+
+const { logInfo, logWarning } = makeComponentLogger("desktop-connection-catalog");
 
 const EncryptedConnectionCatalogDocument = Schema.Struct({
   version: Schema.Literal(1),
@@ -59,6 +65,7 @@ const DesktopConnectionCatalogStoreMigrationOperation = Schema.Literals([
   "read-legacy-secret",
   "encode-catalog",
   "persist-catalog",
+  "backup-catalog",
 ]);
 
 const DesktopConnectionCatalogStoreProtectionOperation = Schema.Literals([
@@ -383,6 +390,8 @@ export const make = Effect.gen(function* () {
   const safeStorage = yield* ElectronSafeStorage.ElectronSafeStorage;
   const random = yield* SecureRandom.SecureRandom;
   const savedEnvironments = yield* DesktopSavedEnvironments.DesktopSavedEnvironments;
+  const legacySafeStorage = yield* DesktopLegacySafeStorage.DesktopLegacySafeStorage;
+  const migrationGate = yield* Semaphore.make(1);
   const catalogPath = path.join(environment.stateDir, "connection-catalog.json");
   const encryptionAvailable = safeStorage.isEncryptionAvailable.pipe(
     Effect.mapError(
@@ -461,6 +470,74 @@ export const make = Effect.gen(function* () {
     return Option.some(encoded);
   });
 
+  // A packaged local fork has its own safeStorage key. Data the dev run wrote with
+  // "Electron Safe Storage" is decrypted once with that key, backed up next to the
+  // catalog (the dev run can still read the backup), and re-encrypted.
+  const migrateFromLegacyKey = Effect.fn("desktop.connectionCatalogStore.migrateFromLegacyKey")(
+    function* (
+      encryptedCatalog: Uint8Array,
+      decryptError: ElectronSafeStorage.ElectronSafeStorageDecryptError,
+    ) {
+      const failWithOriginal = Effect.fail(
+        new DesktopConnectionCatalogStoreProtectionError({
+          operation: "decrypt-catalog",
+          catalogPath,
+          cause: decryptError,
+        }),
+      );
+      if (!legacySafeStorage.enabled) {
+        return yield* failWithOriginal;
+      }
+      const legacy = yield* legacySafeStorage.decrypt(encryptedCatalog).pipe(
+        Effect.catch((error) =>
+          logWarning("could not read the dev-run safe storage key", {
+            catalogPath,
+            reason: error.reason,
+          }).pipe(Effect.as(Option.none<string>())),
+        ),
+      );
+      // A wrong CBC key can still unpad; only a JSON catalog counts as decrypted.
+      const catalog = Option.filter(legacy, (value) => {
+        try {
+          JSON.parse(value);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      if (Option.isNone(catalog)) {
+        return yield* failWithOriginal;
+      }
+      const stamp = DateTime.formatIso(yield* DateTime.now).replace(/[:.]/g, "-");
+      const backupPath = `${catalogPath}.bak-${stamp}`;
+      yield* fileSystem.copyFile(catalogPath, backupPath).pipe(
+        Effect.mapError(
+          (cause) =>
+            new DesktopConnectionCatalogStoreMigrationError({
+              operation: "backup-catalog",
+              catalogPath,
+              cause,
+            }),
+        ),
+      );
+      yield* writeCatalog(catalog.value).pipe(
+        Effect.mapError(
+          (cause) =>
+            new DesktopConnectionCatalogStoreMigrationError({
+              operation: "persist-catalog",
+              catalogPath,
+              cause,
+            }),
+        ),
+      );
+      yield* logInfo("re-encrypted the connection catalog with this app's safe storage key", {
+        catalogPath,
+        backupPath,
+      });
+      return catalog.value;
+    },
+  );
+
   return DesktopConnectionCatalogStore.of({
     get: Effect.gen(function* () {
       const document = yield* readDocument(fileSystem, catalogPath);
@@ -472,20 +549,19 @@ export const make = Effect.gen(function* () {
       }
       const decrypted = yield* decodeSecretBytes(catalogPath, document.value.encryptedCatalog).pipe(
         Effect.flatMap((encryptedCatalog) =>
-          safeStorage.decryptString(encryptedCatalog).pipe(
-            Effect.mapError(
-              (cause) =>
-                new DesktopConnectionCatalogStoreProtectionError({
-                  operation: "decrypt-catalog",
-                  catalogPath,
-                  cause,
-                }),
+          safeStorage
+            .decryptString(encryptedCatalog)
+            .pipe(
+              Effect.catch((decryptError) => migrateFromLegacyKey(encryptedCatalog, decryptError)),
             ),
-          ),
         ),
       );
       return Option.some(decrypted);
-    }).pipe(Effect.withSpan("desktop.connectionCatalogStore.get")),
+    }).pipe(
+      // Concurrent first reads must not migrate (and prompt for the Keychain) twice.
+      migrationGate.withPermits(1),
+      Effect.withSpan("desktop.connectionCatalogStore.get"),
+    ),
     set: Effect.fn("desktop.connectionCatalogStore.set")(function* (catalog) {
       if (!(yield* encryptionAvailable)) {
         return false;

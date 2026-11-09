@@ -30,6 +30,7 @@ import {
   readWorkspaceConfig,
   createBuildConfig,
   DesktopLocalForkHomeError,
+  resolveDesktopIdentity,
   DESKTOP_FILE_EXCLUSIONS,
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
@@ -562,6 +563,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(config.productName, "T3 Code (Beta)");
       const mac = config.mac as { extendInfo: Record<string, unknown> };
       assert.notProperty(mac.extendInfo, "LSEnvironment");
+      assert.isUndefined((yield* resolveDesktopIdentity("0.1.6")).runtimeAppName);
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
@@ -585,6 +587,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         T3CODE_DISABLE_AUTO_UPDATE: "true",
         T3CODE_DESKTOP_APP_USER_MODEL_ID: "com.example.fork",
       });
+      // The runtime app name selects the "<name> Safe Storage" keychain key.
+      const identity = yield* resolveDesktopIdentity("0.1.6");
+      assert.equal(identity.runtimeAppName, "T3 Code (Custom)");
     }).pipe(
       Effect.provide(
         ConfigProvider.layer(

@@ -954,6 +954,7 @@ interface ResolvedBuildOptions {
 
 interface StagePackageJson {
   readonly name: string;
+  readonly productName?: string;
   readonly version: string;
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
@@ -2783,7 +2784,7 @@ export const resolveDesktopIdentity = Effect.fn("resolveDesktopIdentity")(functi
   const appId = nonEmpty(env.appId) ?? DESKTOP_APP_ID;
   const productName = nonEmpty(env.productName) ?? resolveDesktopProductName(version);
   if (!env.localFork) {
-    return { appId, productName, launchEnvironment: undefined };
+    return { appId, productName, launchEnvironment: undefined, runtimeAppName: undefined };
   }
   // Finder and Dock launches skip the shell, so the packaged app carries the fork
   // environment itself: same data directory as local-fork.sh start, no auto-update.
@@ -2797,7 +2798,10 @@ export const resolveDesktopIdentity = Effect.fn("resolveDesktopIdentity")(functi
     T3CODE_DISABLE_AUTO_UPDATE: "true",
     T3CODE_DESKTOP_APP_USER_MODEL_ID: appId,
   };
-  return { appId, productName, launchEnvironment };
+  // Electron names the app (and its "<name> Safe Storage" keychain key) from
+  // app.asar's package.json productName before any app code runs. Without it the
+  // fork would be "t3code" and share the official app's key.
+  return { appId, productName, launchEnvironment, runtimeAppName: productName };
 });
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -3901,8 +3905,10 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     options.platform === "win"
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
       : undefined;
+  const stageAppName = (yield* resolveDesktopIdentity(appVersion)).runtimeAppName;
   const stagePackageJson: StagePackageJson = {
     name: "t3code",
+    ...(stageAppName ? { productName: stageAppName } : {}),
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,

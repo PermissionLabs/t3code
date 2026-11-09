@@ -6,10 +6,19 @@
 # every time. The app carries the fork environment in LSEnvironment, so Finder
 # and Dock launches use the same data directory as local-fork.sh start.
 #
-# Usage: apps/desktop/scripts/t3-update.sh [--skip-update] [--install]
+# Usage: apps/desktop/scripts/t3-update.sh [--skip-update] [--install] | --back-to-dev
 #   --skip-update  do not run local-fork.sh update first
-#   --install      replace /Applications/T3 Code (Custom).app (keeps .prev);
-#                  refused while the packaged app cannot read the dev data
+#   --install      replace /Applications/T3 Code (Custom).app (keeps .prev)
+#   --back-to-dev  restore the dev-run connection catalog backup, then print
+#                  how to start the dev-run app again
+#
+# Safe storage: the packaged app is named "T3 Code (Custom)" and encrypts with
+# the "T3 Code (Custom) Safe Storage" keychain key; local-fork.sh start runs a
+# bare Electron binary that uses "Electron Safe Storage". On its first launch the
+# packaged app reads the old key once (macOS asks to allow access to "Electron
+# Safe Storage"), re-encrypts userdata/connection-catalog.json with its own key
+# and keeps the original as connection-catalog.json.bak-<time>. The dev run
+# cannot read the re-encrypted file; --back-to-dev puts the backup back.
 #
 # Works from a bare login shell: fork-env.sh puts node_modules/.bin (vp),
 # node (mise/nvm) and cargo on PATH the same way for local-fork.sh.
@@ -28,6 +37,7 @@ out="$repo/release/custom"
 dest="/Applications/$product.app"
 
 recover="cd $repo && apps/desktop/scripts/local-fork.sh build && apps/desktop/scripts/local-fork.sh start"
+catalog="$data/userdata/connection-catalog.json"
 fail() {
   printf '%s\n' "$*" >&2
   printf 'Back to the dev-run app: %s\n' "$recover" >&2
@@ -37,14 +47,34 @@ fail() {
 
 skip_update=0
 install=0
+back_to_dev=0
 for arg in "$@"; do
   case "$arg" in
     --skip-update) skip_update=1 ;;
     --install) install=1 ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    --back-to-dev) back_to_dev=1 ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) fail "Unknown option: $arg" ;;
   esac
 done
+
+# Moves the packaged app's catalog aside (never deletes it) and restores the
+# newest dev-run backup. Connections changed in the packaged app since the
+# backup are only in the moved-aside file.
+if [ "$back_to_dev" = 1 ]; then
+  pgrep -f "$product.app/Contents/MacOS/" >/dev/null && fail "$product is running. Quit it first."
+  latest=$(ls -t "$catalog".bak-* 2>/dev/null | head -n 1 || true)
+  if [ -z "$latest" ]; then
+    printf 'No %s.bak-* backup: the packaged app never migrated, dev data is unchanged.\n' "$catalog"
+  else
+    aside="$catalog.custom-$(date +%Y%m%dT%H%M%S)"
+    [ -e "$catalog" ] && mv "$catalog" "$aside" && printf 'Moved the packaged app catalog to %s\n' "$aside"
+    cp -p "$latest" "$catalog"
+    printf 'Restored %s\n' "$latest"
+  fi
+  printf 'Start the dev-run app: %s\n' "$recover"
+  exit 0
+fi
 
 [ "$(uname -s)" = Darwin ] || fail 'macOS only.'
 case "$identity" in 'Developer ID'*) fail 'Use the personal Apple Development identity, not a Developer ID.' ;; esac
@@ -110,12 +140,9 @@ lsenv() { /usr/libexec/PlistBuddy -c "Print :LSEnvironment:$1" "$plist" 2>/dev/n
 [ "$(lsenv T3CODE_LOCAL_FORK)" = 1 ] || fail "LSEnvironment T3CODE_LOCAL_FORK is not 1: $plist"
 printf 'LSEnvironment: T3CODE_HOME=%s\n' "$data"
 
-# Electron encrypts the connection catalog, saved secrets and cookies under
-# $data with the "<app name> Safe Storage" keychain key. local-fork.sh start runs
-# a bare Electron binary, so its key is "Electron Safe Storage"; the packaged app
-# takes its name from app.asar's package.json. Different keys cannot decrypt each
-# other's data, which shows up as an empty window ("No projects yet",
-# "Connect to see limits").
+# Electron names the safe storage keychain key "<app name> Safe Storage" from
+# app.asar's package.json (productName, else name). The fork must not fall back
+# to "t3code": that is the official app's key.
 packaged_name=$(node -e '
   const fs = require("fs");
   const fd = fs.openSync(process.argv[1], "r");
@@ -130,28 +157,20 @@ packaged_name=$(node -e '
   const pkg = JSON.parse(body.toString());
   process.stdout.write(pkg.productName || pkg.name);
 ' "$app/Contents/Resources/app.asar") || fail "Could not read the app name from $app/Contents/Resources/app.asar"
-packaged_key="$packaged_name Safe Storage"
-dev_key='Electron Safe Storage'
-printf 'Safe storage key: packaged "%s", dev-run "%s"\n' "$packaged_key" "$dev_key"
-key_mismatch=0
-if [ "$packaged_key" != "$dev_key" ] && [ -d "$data/userdata" ] &&
-  security find-generic-password -s "$dev_key" >/dev/null 2>&1; then
-  key_mismatch=1
-fi
+[ "$packaged_name" = "$product" ] ||
+  fail "Packaged app name is \"$packaged_name\", expected \"$product\": it would use the \"$packaged_name Safe Storage\" keychain key. Not installing."
+printf 'Safe storage key: "%s Safe Storage" (dev run: "Electron Safe Storage")\n' "$packaged_name"
 
 if [ "$install" = 1 ]; then
-  if [ "$key_mismatch" = 1 ]; then
-    fail "Not installing: $data was written by the dev-run app with the \"$dev_key\" keychain key, but the packaged app uses \"$packaged_key\". It would open without projects or sign-in. /Applications was not changed."
-  fi
   pgrep -f "$product.app/Contents/MacOS/" >/dev/null && fail "$product is running. Quit it before installing."
   rm -rf "$dest.prev"
   [ -e "$dest" ] && mv "$dest" "$dest.prev"
   ditto "$app" "$dest"
   codesign --verify --deep --strict "$dest"
   printf 'Installed: %s (previous copy: %s.prev)\n' "$dest" "$dest"
-  printf 'Open it with: open "%s"\n' "$dest"
-  printf 'Check that your projects and sign-in appear. If the window is empty, quit it and run:\n  %s\n' "$recover"
-elif [ "$key_mismatch" = 1 ]; then
-  printf 'Note: --install would be refused. This app uses "%s" and cannot read data the dev-run app wrote with "%s".\n' "$packaged_key" "$dev_key"
-  printf 'Do not open %s against %s.\n' "$app" "$data"
+  printf 'Quit the dev-run app first (both use %s), then open it with: open "%s"\n' "$data" "$dest"
+  if [ -f "$catalog" ] && ! ls "$catalog".bak-* >/dev/null 2>&1; then
+    printf 'First launch migrates your connections: when macOS asks to use "Electron Safe Storage", click Allow.\n'
+  fi
+  printf 'If the window is empty, quit it and go back to the dev run:\n  %s --back-to-dev\n' "$0"
 fi
