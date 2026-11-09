@@ -280,6 +280,7 @@ export function layerWithRegistry<Error>(
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
+    readonly delegatedTaskLifecycle?: boolean;
     readonly managedPolicy?: ManagedPolicyDocument;
   } = {},
 ): Layer.Layer<
@@ -315,6 +316,9 @@ export function layerWithRegistry<Error>(
           ...(options.continueThreadsAfterServerUpdate === undefined
             ? {}
             : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
+          ...(options.delegatedTaskLifecycle === undefined
+            ? {}
+            : { delegatedTaskLifecycle: options.delegatedTaskLifecycle }),
         },
         policy.summary,
       ),

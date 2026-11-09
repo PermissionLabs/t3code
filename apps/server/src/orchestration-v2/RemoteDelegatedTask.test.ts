@@ -59,7 +59,7 @@ const layerTest = Layer.mergeAll(
   ProviderReplayHarness.layerWithRegistry(
     { name: "remote-delegated-task" },
     ProviderAdapterRegistry.layerFromAdapters([adapter]),
-    { databaseLayer: layerDatabase, runEffectWorker: false },
+    { databaseLayer: layerDatabase, runEffectWorker: false, delegatedTaskLifecycle: true },
   ),
 ).pipe(
   Layer.provide(
@@ -406,6 +406,177 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
       const offered = yield* Ref.get(offers);
       assert.equal(offered.length, 1);
       assert.equal(offered[0]?.threadId, parent.threadId);
+    }),
+  );
+
+  it.effect("tells its parent once when its thread there is settled, and not once put away", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const parent = yield* seedLiveParent("lifecycle");
+      yield* orchestrator.dispatch({
+        type: "delegated_task.remote.request",
+        commandId: CommandId.make("command:remote-delegate:lifecycle"),
+        parentThreadId: parent.threadId,
+        parentRunId: parent.runId,
+        parentNodeId: parent.rootNodeId,
+        task: "Run the suite there.",
+        title: "Suite on the box",
+        driver: ProviderDriverKind.make("remote"),
+        modelSelection,
+        remoteChild,
+        completionWake: "always",
+      });
+      const taskId = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents[0]!.id;
+      yield* orchestrator.dispatch({
+        type: "delegated_task.remote.complete",
+        commandId: CommandId.make("command:remote-complete:lifecycle"),
+        parentThreadId: parent.threadId,
+        taskId,
+        status: "completed",
+        result: "Done there.",
+        stoppedThere: "ran-out",
+      });
+      const lifecycle = (state: "active" | "settled" | "archived", attempt: string) =>
+        orchestrator.dispatch({
+          type: "delegated_task.child-lifecycle",
+          commandId: CommandId.make(`command:lifecycle:${state}:${attempt}`),
+          parentThreadId: parent.threadId,
+          taskId,
+          state,
+        });
+      const notices = Effect.map(orchestrator.getThreadProjection(parent.threadId), (projection) =>
+        projection.messages.filter(
+          (message) =>
+            message.notification?.source.kind === "delegated_task" &&
+            message.notification.outcome === "updated",
+        ),
+      );
+
+      yield* lifecycle("settled", "first");
+      // The same state seen again records nothing and tells no one twice.
+      const repeated = yield* lifecycle("settled", "again").pipe(Effect.flip);
+      assert.equal(repeated._tag, "OrchestratorDispatchError");
+      const settled = yield* orchestrator.getThreadProjection(parent.threadId);
+      const task = settled.subagents.find((candidate) => candidate.id === taskId);
+      assert.equal(task?.childLifecycle?.state, "settled");
+      // The result and its delivery stand.
+      assert.equal(task?.result, "Done there.");
+      assert.equal(task?.completionDelivery?.state, "claimed");
+      const [notice] = yield* notices;
+      assert.equal((yield* notices).length, 1);
+      assert.deepEqual(notice?.notification?.source, { kind: "delegated_task", taskIds: [taskId] });
+      assert.include(notice?.text ?? "", `its thread ${remoteChild.threadId} in Box was settled`);
+      // Queued behind the parent's live run, so it wakes the agent once that turn ends.
+      assert.equal(settled.runs.find((run) => run.userMessageId === notice?.id)?.status, "queued");
+
+      yield* lifecycle("active", "unsettled");
+      assert.equal((yield* notices).length, 2);
+
+      // A parent the user archived keeps the record but is not woken.
+      yield* orchestrator.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.make("command:archive-parent:lifecycle"),
+        threadId: parent.threadId,
+      });
+      yield* lifecycle("archived", "parent-archived");
+      const archived = yield* orchestrator.getThreadProjection(parent.threadId);
+      assert.equal(
+        archived.subagents.find((candidate) => candidate.id === taskId)?.childLifecycle?.state,
+        "archived",
+      );
+      assert.equal((yield* notices).length, 2);
+    }),
+  );
+
+  it.effect("holds a result for a parent the user settled until it is unsettled", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const parent = yield* seedLiveParent("held");
+      yield* orchestrator.dispatch({
+        type: "delegated_task.remote.request",
+        commandId: CommandId.make("command:remote-delegate:held"),
+        parentThreadId: parent.threadId,
+        parentRunId: parent.runId,
+        parentNodeId: parent.rootNodeId,
+        task: "Run the overnight job there.",
+        driver: ProviderDriverKind.make("remote"),
+        modelSelection,
+        remoteChild,
+        completionWake: "always",
+      });
+      const taskId = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents[0]!.id;
+      // The parent's turn ends with the task still running there, and the user settles it.
+      const ended = yield* orchestrator.getThreadProjection(parent.threadId);
+      const now = yield* DateTime.now;
+      yield* sink.write({
+        commandId: CommandId.make("command:end-parent-turn:held"),
+        events: [
+          {
+            id: EventId.make("event:end-parent-node:held"),
+            type: "node.updated",
+            threadId: parent.threadId,
+            runId: parent.runId,
+            nodeId: parent.rootNodeId,
+            driver,
+            providerInstanceId: instanceId,
+            occurredAt: now,
+            payload: {
+              ...ended.nodes.find((node) => node.id === parent.rootNodeId)!,
+              status: "completed",
+              completedAt: now,
+            },
+          },
+          {
+            id: EventId.make("event:end-parent-run:held"),
+            type: "run.updated",
+            threadId: parent.threadId,
+            runId: parent.runId,
+            nodeId: parent.rootNodeId,
+            providerInstanceId: instanceId,
+            occurredAt: now,
+            payload: {
+              ...ended.runs.find((run) => run.id === parent.runId)!,
+              status: "completed",
+              completedAt: now,
+            },
+          },
+        ],
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.settle",
+        commandId: CommandId.make("command:settle-parent:held"),
+        threadId: parent.threadId,
+      });
+      const offers = yield* Offers;
+      yield* Ref.set(offers, []);
+
+      yield* orchestrator.dispatch({
+        type: "delegated_task.remote.complete",
+        commandId: CommandId.make("command:remote-complete:held"),
+        parentThreadId: parent.threadId,
+        taskId,
+        status: "completed",
+        result: "Finished overnight.",
+        stoppedThere: "ran-out",
+      });
+      const held = yield* orchestrator.getThreadProjection(parent.threadId);
+      // Recorded and claimed for delivery, but the settled parent is not woken.
+      assert.equal(held.subagents[0]?.result, "Finished overnight.");
+      assert.equal(held.subagents[0]?.completionDelivery?.state, "claimed");
+      assert.equal(held.thread.settledOverride, "settled");
+      assert.deepEqual(yield* Ref.get(offers), []);
+
+      // Undoing the settle delivers what waited.
+      yield* orchestrator.dispatch({
+        type: "thread.unsettle",
+        commandId: CommandId.make("command:unsettle-parent:held"),
+        threadId: parent.threadId,
+        reason: "user",
+      });
+      const offered = yield* Ref.get(offers);
+      assert.equal(offered.length, 1);
+      assert.equal(offered[0]?.delegatedCompletion?.parentRunId, parent.runId);
     }),
   );
 });

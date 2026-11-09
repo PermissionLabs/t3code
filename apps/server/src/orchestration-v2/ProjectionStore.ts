@@ -560,6 +560,16 @@ export interface ProjectionStoreV2Shape {
     ReadonlyArray<{ readonly parentThreadId: ThreadId; readonly taskId: NodeId }>,
     ProjectionStoreV2Error
   >;
+  /**
+   * Remote delegated tasks that finished since `since` whose thread there was not yet seen
+   * archived or deleted, on parents that are neither archived nor deleted.
+   */
+  readonly getFinishedRemoteDelegatedTasks: (
+    since: DateTime.Utc,
+  ) => Effect.Effect<
+    ReadonlyArray<{ readonly parentThreadId: ThreadId; readonly taskId: NodeId }>,
+    ProjectionStoreV2Error
+  >;
   readonly getTurnStartContext: (
     threadId: ThreadId,
     runId: RunId,
@@ -6600,6 +6610,34 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
 
+    const getFinishedRemoteDelegatedTasks: ProjectionStoreV2Shape["getFinishedRemoteDelegatedTasks"] =
+      (since) =>
+        sql<{
+          readonly thread_id: string;
+          readonly subagent_id: string;
+        }>`
+          SELECT task.thread_id, task.subagent_id
+          FROM orchestration_v2_projection_subagents AS task
+          JOIN orchestration_v2_projection_threads AS parent ON parent.thread_id = task.thread_id
+          WHERE task.origin = 'app_owned'
+            AND task.child_thread_id IS NULL
+            AND json_type(task.payload_json, '$.remoteChild') = 'object'
+            AND json_type(task.payload_json, '$.result') = 'text'
+            AND julianday(task.completed_at) >= julianday(${DateTime.formatIso(since)})
+            AND COALESCE(json_extract(task.payload_json, '$.childLifecycle.state'), 'active')
+              NOT IN ('archived', 'deleted')
+            AND parent.archived_at IS NULL
+            AND parent.deleted_at IS NULL
+        `.pipe(
+          Effect.map((rows) =>
+            rows.map((row) => ({
+              parentThreadId: ThreadId.make(row.thread_id),
+              taskId: NodeId.make(row.subagent_id),
+            })),
+          ),
+          Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+        );
+
     const getThreadsWithPullRequests: ProjectionStoreV2Shape["getThreadsWithPullRequests"] =
       Effect.fn("ProjectionStore.getThreadsWithPullRequests")(
         function* (threadId) {
@@ -7271,6 +7309,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getThreadsWithPullRequests: readOnReader(getThreadsWithPullRequests),
       getThreadWorktreePaths: readOnReader(getThreadWorktreePaths),
       getOpenRemoteDelegatedTasks: getOpenRemoteDelegatedTasks.pipe(NodeSqliteClient.readOnly),
+      getFinishedRemoteDelegatedTasks: readOnReader(getFinishedRemoteDelegatedTasks),
       getThreadProjection: readOnReader(getThreadProjection),
       getTurnStartContext: readOnReader(getTurnStartContext),
       getTurnStartHistory: readOnReader(getTurnStartHistory),

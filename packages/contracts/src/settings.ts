@@ -1183,6 +1183,34 @@ export const StorageCleanupSettings = Schema.Struct({
 });
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
+/** Thread events a `threadHooks` entry can run on. */
+export const ThreadHookEvent = Schema.Literals([
+  "thread.settled",
+  "thread.unsettled",
+  "thread.archived",
+  "thread.unarchived",
+  "thread.deleted",
+  "delegated_task.completed",
+  "delegated_task.child-lifecycle",
+]);
+export type ThreadHookEvent = typeof ThreadHookEvent.Type;
+
+/**
+ * A shell command run on this machine for each matching event, with the event's JSON on stdin.
+ * Only settings.json sets it: the settings patch clients send cannot, so no client can make
+ * the server run a command.
+ */
+export const ThreadHook = Schema.Struct({
+  events: Schema.Array(ThreadHookEvent).check(Schema.isMinLength(1)),
+  command: TrimmedNonEmptyString,
+  /** Default 10 seconds, at most 5 minutes. */
+  timeoutMs: Schema.optional(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(100), Schema.isLessThanOrEqualTo(300_000)),
+  ),
+});
+export type ThreadHook = typeof ThreadHook.Type;
+const isThreadHook = Schema.is(ThreadHook);
+
 export const ServerSettings = Schema.Struct({
   // Null means unmigrated; empty is authoritative and must not resurrect cleared preferences.
   favorites: Schema.NullOr(ModelFavorites).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -1278,6 +1306,24 @@ export const ServerSettings = Schema.Struct({
    * and tasks on another machine; tasks already running there finish.
    */
   linkedEnvironmentsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * Treats settling as putting delegated work away. A parent agent hears when a task's thread
+   * is settled, made active again, archived or deleted, here or on a linked machine (polled
+   * after the task finishes). A settled parent is not woken: its task results wait until it is
+   * unsettled, and reach `threadHooks` meanwhile. Off by default.
+   */
+  delegatedTaskLifecycle: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Bad entries drop alone, so a hand edit cannot reset settings. */
+  threadHooks: Schema.Array(Schema.Unknown).pipe(
+    Schema.decodeTo(
+      Schema.Array(ThreadHook),
+      SchemaTransformation.transform<ReadonlyArray<ThreadHook>, ReadonlyArray<unknown>>({
+        decode: (values) => values.filter(isThreadHook),
+        encode: (values) => values,
+      }),
+    ),
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   sidebarAutoSettleKeepPullRequests: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
@@ -1659,6 +1705,7 @@ export const ServerSettingsPatch = Schema.Struct({
   hideTaggedThreads: Schema.optionalKey(Schema.Boolean),
   guestSharingEnabled: Schema.optionalKey(Schema.Boolean),
   linkedEnvironmentsEnabled: Schema.optionalKey(Schema.Boolean),
+  delegatedTaskLifecycle: Schema.optionalKey(Schema.Boolean),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({
       schemaVersion: Schema.optionalKey(Schema.Literal(1)),
