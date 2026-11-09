@@ -11,6 +11,8 @@ built="$state/local-fork-built"
 action=${1:-status}
 
 fail() { printf '%s\n' "$*" >&2; exit 1; }
+. "$repo/apps/desktop/scripts/fork-env.sh"
+fork_env
 clean() {
   [ "$(git branch --show-current)" = custom/local ] || fail 'Switch to custom/local first.'
   [ -z "$(git status --porcelain)" ] || fail 'Commit or stash your changes before continuing.'
