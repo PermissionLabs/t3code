@@ -14,6 +14,7 @@ import {
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -292,12 +293,22 @@ const makeLaptop = Effect.gen(function* () {
                   // Work another environment's link started on this laptop.
                   linkOrigin: { sessionId: "session:desk", label: "T3 Code · Desk" },
                 }
-              : liveThreadShell(
-                  threadId,
-                  threadId === ThreadId.make("thread:laptop-plan")
-                    ? { runtimeMode: "full-access", interactionMode: "plan" }
-                    : { runtimeMode: "full-access" },
-                ),
+              : threadId === ThreadId.make("thread:laptop-from-desk-taken-over")
+                ? {
+                    ...liveThreadShell(threadId, { runtimeMode: "full-access" }),
+                    // The desk's link started it, then the laptop's user messaged it here.
+                    linkOrigin: { sessionId: "session:desk", label: "T3 Code · Desk" },
+                    linkFenceRelease: {
+                      releasedAt: DateTime.makeUnsafe("2026-11-10T00:00:00.000Z"),
+                      releasedBy: { kind: "local-user" as const, sessionId: "session:laptop-user" },
+                    },
+                  }
+                : liveThreadShell(
+                    threadId,
+                    threadId === ThreadId.make("thread:laptop-plan")
+                      ? { runtimeMode: "full-access", interactionMode: "plan" }
+                      : { runtimeMode: "full-access" },
+                  ),
           ),
         getProjectThreadRecords: ({ threadId }) =>
           Effect.succeed({
@@ -688,6 +699,16 @@ it.effect("refuses what a linked environment cannot take before anything leaves"
         expect(failureOf(relayed), name).toMatchObject({ code: "capability_denied" });
       }
       expect(yield* Ref.get(b.bearers)).toEqual([]);
+
+      // Once the laptop's user took that thread over, it is the laptop's own and may use them.
+      const takenOver = yield* a.call("thread:laptop-from-desk-taken-over", "t3_thread_send", {
+        environmentId: box.environmentId,
+        threadId: boxThread,
+        message: "From the laptop's user, via the thread they took over.",
+        clientRequestId: "taken-over-send",
+      });
+      expect(takenOver.isError, JSON.stringify(takenOver.content)).toBe(false);
+      expect((yield* Ref.get(seen)).sends).toHaveLength(1);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

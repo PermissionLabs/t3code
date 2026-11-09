@@ -75,6 +75,7 @@ import {
   TurnItemId,
   TrimmedNonEmptyString,
   managedRuntimeModeCeilingMessage,
+  threadLinkFence,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { modelSwitchSince } from "./modelSwitch.ts";
@@ -574,6 +575,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.pull-request.sync":
     case "thread.title.regeneration.complete":
     case "thread.project.adopt-folder":
+    case "thread.link-fence.release":
     case "thread.runtime-mode.set":
     case "thread.interaction-mode.set":
     case "thread.model-selection.set":
@@ -4399,6 +4401,41 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       providerInstanceId: thread.providerInstanceId,
       occurredAt: now,
       payload: { ...thread, projectId: command.projectId, worktreePath: null, updatedAt: now },
+    });
+  });
+
+  /**
+   * Records that a person here took over a thread a fenced link started. Only the server issues
+   * it (see `LinkFenceTakeover`); a thread with no fence to lift, or one already lifted, is left
+   * as it is, so a retry or a race records nothing twice.
+   */
+  const dispatchThreadLinkFenceRelease = Effect.fn(
+    "orchestrationV2.dispatch.threadLinkFenceRelease",
+  )(function* (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.link-fence.release" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const thread = yield* projectionStore
+      .getThread(command.threadId)
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+        ),
+      );
+    if (thread.deletedAt !== null || threadLinkFence(thread) === undefined) return;
+    const now = yield* DateTime.now;
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "thread.link-fence-released",
+      threadId: command.threadId,
+      providerInstanceId: thread.providerInstanceId,
+      occurredAt: now,
+      payload: {
+        ...thread,
+        linkFenceRelease: { releasedAt: now, releasedBy: command.releasedBy },
+      },
     });
   });
 
@@ -13356,6 +13393,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "thread.project.adopt-folder":
         yield* dispatchThreadProjectAdoptFolder(command, events);
+        break;
+      case "thread.link-fence.release":
+        yield* dispatchThreadLinkFenceRelease(command, events);
         break;
       case "message.dispatch": {
         // Providers own native subagent conversations; messages cannot target them, and adapters ask questions on the parent.

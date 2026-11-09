@@ -350,6 +350,12 @@ and the access, then approve.
   access, the link's agents can change only threads it started, not that
   machine's own threads, projects or settings, and they skip its project setup
   scripts.
+- To take over such a thread yourself, set `"releaseLinkFenceOnUserTakeover": true` in
+  that machine's `settings.json` (off by default). Then the first message you send the
+  thread from your own app there, not over a link, lifts that limit for good, even after a
+  restart: the thread's agents work like that machine's own, and the link that started it
+  can no longer change it. The thread keeps its **From** badge. Messages sent over the link
+  never lift it, and its forks start limited again.
 - The link shows up in that machine's **Settings → Sharing & access** like any
   outside agent. Revoke it there to end it. **Forget** on this machine only
   removes it here.
