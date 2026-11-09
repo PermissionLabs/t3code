@@ -17,6 +17,7 @@ import { McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 
 import { OrchestratorProjectionError } from "../orchestration-v2/Orchestrator.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
+import * as LaunchedThreadTracking from "../peer/LaunchedThreadTracking.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
@@ -451,6 +452,49 @@ it.effect.each([
     Effect.map((outcome) => expect(outcome).toBe(expected)),
     Effect.provide(linkedProbeServer),
   ),
+);
+
+it.effect("records a thread launched in a linked environment for its follower, not one here", () =>
+  Effect.gen(function* () {
+    const recorded: Array<readonly [ThreadId, EnvironmentId, unknown]> = [];
+    const LaunchToolkit = Toolkit.make(Tool.make("t3_thread_launch", linkedProbe));
+    const server = McpHttpServer.toolkitRegistration(
+      LaunchToolkit,
+      McpToolAccess.toLayer(LaunchToolkit, {
+        t3_thread_launch: McpToolAccess.startsThreads((input) => input, ranHere, "stamped"),
+      }),
+    ).pipe(
+      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+      Layer.provideMerge(
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: (threadId) => Effect.succeed(shells.get(threadId) ?? null),
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(PeerForwarding.PeerForwarding)({
+          call: (_scope, tool, environmentId) =>
+            Effect.succeed({ ran: `${tool.name} in ${environmentId}` } as never),
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(LaunchedThreadTracking.LaunchedThreadTracking)({
+          record: (launcher, environmentId, launched) =>
+            Effect.sync(() => {
+              recorded.push([launcher.threadId, environmentId, launched]);
+            }),
+        }),
+      ),
+    );
+    const outcomes = yield* Effect.all([
+      call("t3_thread_launch", supervised, { environmentId: box }),
+      call("t3_thread_launch", supervised, { environmentId: here }),
+      call("t3_thread_launch", supervised, {}),
+    ]).pipe(Effect.provide(server));
+    expect(outcomes).toEqual(["t3_thread_launch in environment-box", "here", "here"]);
+    expect(recorded).toEqual([
+      [supervisedThreadId, box, { ran: "t3_thread_launch in environment-box" }],
+    ]);
+  }),
 );
 
 it.effect("refuses a linked environment to a tool that acts as its calling thread", () =>
