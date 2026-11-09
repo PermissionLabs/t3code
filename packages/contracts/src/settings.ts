@@ -1192,6 +1192,8 @@ export const ThreadHookEvent = Schema.Literals([
   "thread.deleted",
   "delegated_task.completed",
   "delegated_task.child-lifecycle",
+  "launched_thread.lifecycle",
+  "launched_thread.run",
 ]);
 export type ThreadHookEvent = typeof ThreadHookEvent.Type;
 
@@ -1313,6 +1315,13 @@ export const ServerSettings = Schema.Struct({
    * unsettled, and reach `threadHooks` meanwhile. Off by default.
    */
   delegatedTaskLifecycle: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * Follows threads an agent here launched in a linked environment with `t3_thread_launch`,
+   * polling them there once a minute for up to 14 days until they are archived or deleted, and
+   * reports their settle, archive, delete and run endings to `threadHooks` as `launched_thread.*`
+   * events. Independent of `delegatedTaskLifecycle`. Off by default.
+   */
+  launchedThreadTracking: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Bad entries drop alone, so a hand edit cannot reset settings. */
   threadHooks: Schema.Array(Schema.Unknown).pipe(
     Schema.decodeTo(
@@ -1706,6 +1715,7 @@ export const ServerSettingsPatch = Schema.Struct({
   guestSharingEnabled: Schema.optionalKey(Schema.Boolean),
   linkedEnvironmentsEnabled: Schema.optionalKey(Schema.Boolean),
   delegatedTaskLifecycle: Schema.optionalKey(Schema.Boolean),
+  launchedThreadTracking: Schema.optionalKey(Schema.Boolean),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({
       schemaVersion: Schema.optionalKey(Schema.Literal(1)),

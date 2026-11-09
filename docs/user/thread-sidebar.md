@@ -241,6 +241,18 @@ its undo arrive as a pair. A failing or slow hook is logged and stopped after it
 last event they ran for; if the server stops mid-hook, that one event can run again, so use its
 `eventId` to ignore a repeat. Clients cannot set hooks, only `settings.json` can.
 
+Threads an agent here starts on a linked machine with `t3_thread_launch` are top-level threads
+there, not delegated tasks, so nothing above covers them. Set `"launchedThreadTracking": true`
+to follow them too: each one is checked there about once a minute, as its launching thread,
+for 14 days or until it is archived or deleted there, including across restarts. Hooks then
+get `launched_thread.run` when its latest run ends (`change` is `completed`, `failed`,
+`cancelled`, or `interrupted`) and `launched_thread.lifecycle` when it is settled, made active
+again, archived, or deleted there (`change` is `settled`, `unsettled`, `archived`, or
+`deleted`). `environmentId` names the linked machine, and `thread` carries its `threadId`,
+`role: "launched-remote"`, the `launcherThreadId` here, `settled`, `archived`, `deleted`, and
+the latest `runStatus`. Each change is reported once; `sequence` counts that thread's events.
+Threads launched on this machine are already covered by the `thread.*` events.
+
 ## Link a pull request
 
 The server finds the PR for each unsettled thread's saved branch, even when your

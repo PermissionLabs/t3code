@@ -4,10 +4,8 @@ import {
   type OrchestrationV2AppThread,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2Subagent,
-  type ThreadHook,
   type ThreadHookEvent,
 } from "@t3tools/contracts";
-import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -22,15 +20,12 @@ import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
-import * as ProcessRunner from "../processRunner.ts";
+import * as ThreadHookCommands from "./ThreadHookCommands.ts";
 import { forkParked } from "../serverActivation.ts";
-import * as ServerSettings from "../serverSettings.ts";
 
-const DEFAULT_TIMEOUT_MS = 10_000;
 const HookCursor = Schema.fromJsonString(Schema.Struct({ sequence: NonNegativeInt }));
 const decodeCursor = Schema.decodeUnknownEffect(HookCursor);
 const encodeCursor = Schema.encodeSync(HookCursor);
-const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const CURSOR_FILE = "thread-hooks-cursor.json";
 
 interface HookThread {
@@ -57,10 +52,7 @@ interface HookTask {
  * What a hook reads on stdin. Ids and states only: no titles, prompts, results or messages.
  * `eventId` names the change; a hook that must not act twice keys on it.
  */
-export interface ThreadHookPayload {
-  readonly version: 1;
-  readonly event: ThreadHookEvent;
-  readonly eventId: string;
+export interface ThreadHookPayload extends ThreadHookCommands.ThreadHookPayloadBase {
   readonly sequence: number;
   readonly occurredAt: string;
   readonly environmentId: string;
@@ -165,8 +157,7 @@ export class ThreadHooks extends Context.Service<
 const make = Effect.gen(function* () {
   const engine = yield* Orchestrator.OrchestratorV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
-  const settings = yield* ServerSettings.ServerSettingsService;
-  const runner = yield* ProcessRunner.ProcessRunner;
+  const commands = yield* ThreadHookCommands.makeCommands;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const config = yield* ServerConfig.ServerConfig;
@@ -174,8 +165,6 @@ const make = Effect.gen(function* () {
     Effect.flatMap((environment) => environment.getEnvironmentId),
   );
   const cursorPath = path.join(config.stateDir, CURSOR_FILE);
-  const windows = (yield* HostProcess.Platform) === "win32";
-  const environment = yield* HostProcess.Environment;
 
   const openChildren = (threadId: OrchestrationV2AppThread["id"]) =>
     projections.getThreadRecords(threadId, ["subagents"]).pipe(
@@ -226,36 +215,6 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  const runHook = (hook: ThreadHook, payload: ThreadHookPayload) =>
-    runner
-      .run({
-        command: windows ? "cmd.exe" : "/bin/sh",
-        args: windows ? ["/d", "/s", "/c", hook.command] : ["-c", hook.command],
-        stdin: `${encodeJson(payload)}\n`,
-        env: { ...environment, T3CODE_HOOK_EVENT: payload.event },
-        timeout: `${hook.timeoutMs ?? DEFAULT_TIMEOUT_MS} millis`,
-        timeoutBehavior: "timedOutResult",
-        maxOutputBytes: 64 * 1024,
-        outputMode: "truncate",
-      })
-      .pipe(
-        Effect.flatMap((result) =>
-          result.timedOut || result.code !== 0
-            ? Effect.logWarning("a thread hook failed", {
-                event: payload.event,
-                eventId: payload.eventId,
-                command: hook.command,
-                exitCode: result.code,
-                timedOut: result.timedOut,
-                stderr: result.stderr.slice(-2_000),
-              })
-            : Effect.void,
-        ),
-        Effect.catchCause((cause) =>
-          Effect.logWarning("a thread hook could not run", { command: hook.command, cause }),
-        ),
-      );
-
   const readCursor = fs.readFileString(cursorPath).pipe(
     Effect.flatMap(decodeCursor),
     Effect.map(({ sequence }): number | undefined => sequence),
@@ -273,11 +232,7 @@ const make = Effect.gen(function* () {
   const handle: ThreadHooks["Service"]["handle"] = Effect.fnUntraced(function* (stored) {
     const payload = yield* payloadFor(stored);
     if (payload === undefined) return;
-    const hooks = (yield* settings.getSettings.pipe(Effect.orElseSucceed(() => undefined)))
-      ?.threadHooks;
-    for (const hook of hooks ?? []) {
-      if (hook.events.includes(payload.event)) yield* runHook(hook, payload);
-    }
+    yield* commands.run(payload);
     // Saved after its hooks ran, so a restart neither repeats nor skips an event.
     yield* writeCursor(stored.sequence);
   });
