@@ -475,11 +475,15 @@ export interface OrchestratorV2Shape {
   readonly getThreadEventSequence: (
     threadId: ThreadId,
   ) => Effect.Effect<number, OrchestratorV2Error>;
+  /** The newest stored event's sequence across every thread. */
+  readonly latestEventSequence: Effect.Effect<number, OrchestratorV2Error>;
   readonly streamStoredEvents: Stream.Stream<OrchestrationV2StoredEvent, OrchestratorV2Error>;
   readonly streamStoredEventsFrom: (input?: {
     readonly threadId?: ThreadId;
     readonly afterSequence?: number;
     readonly eventType?: OrchestrationV2DomainEvent["type"];
+    /** Default true. A worker that keeps its own cursor passes false so load never drops it. */
+    readonly bounded?: boolean;
   }) => Stream.Stream<OrchestrationV2StoredEvent, OrchestratorV2Error>;
   readonly streamDomainEvents: Stream.Stream<OrchestrationV2DomainEvent, OrchestratorV2Error>;
 }
@@ -14362,8 +14366,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           }),
       ),
     ),
+    latestEventSequence: eventSink
+      .latestSequence()
+      .pipe(Effect.mapError((cause) => new OrchestratorDomainEventStreamError({ cause }))),
     streamStoredEventsFrom: (input) =>
-      eventSink.stream({ ...input, bounded: true }).pipe(
+      eventSink.stream({ bounded: true, ...input }).pipe(
         Stream.mapError(
           (cause) =>
             new OrchestratorDomainEventStreamError({

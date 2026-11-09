@@ -214,6 +214,33 @@ parent agent is also told when you settle, un-settle, archive, or delete a task'
 including a task on a linked machine, which is checked about once a minute for 14 days after it
 finishes.
 
+To act on these changes outside T3 Code, add `threadHooks` to `settings.json`. Each entry runs
+a shell command on this machine for the events it lists, with the event as one line of JSON on
+stdin:
+
+```json
+{
+  "threadHooks": [
+    {
+      "events": ["thread.settled", "thread.unsettled"],
+      "command": "~/bin/on-settle",
+      "timeoutMs": 10000
+    }
+  ]
+}
+```
+
+Events are `thread.settled`, `thread.unsettled`, `thread.archived`, `thread.unarchived`, and
+`thread.deleted` for any thread here, plus `delegated_task.completed` and
+`delegated_task.child-lifecycle` for tasks a thread here delegated. The JSON names the thread,
+whether it is top-level or a delegated child and its parent, the tasks it delegated that are
+still running, and for task events the task and whether its parent was settled. It never carries
+titles, prompts, results, or messages. Hooks run one at a time in event order, so a settle and
+its undo arrive as a pair. A failing or slow hook is logged and stopped after its timeout
+(default 10 seconds) without holding up anything else. After a restart, hooks resume after the
+last event they ran for; if the server stops mid-hook, that one event can run again, so use its
+`eventId` to ignore a repeat. Clients cannot set hooks, only `settings.json` can.
+
 ## Link a pull request
 
 The server finds the PR for each unsettled thread's saved branch, even when your
