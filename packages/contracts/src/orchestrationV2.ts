@@ -129,6 +129,37 @@ export const linkOriginIsFenced = (origin: OrchestrationV2LinkOrigin) =>
   origin.access !== "full-access";
 
 /**
+ * A person at this environment took over a thread a fenced link started by sending it a message
+ * from one of their own clients (never over a link). From then on the thread works as this
+ * environment's own: `linkOrigin` stays for provenance, but nothing is fenced by it. Recorded once
+ * and never cleared. Only the server sets it, and only with `releaseLinkFenceOnUserTakeover` on.
+ */
+export const OrchestrationV2LinkFenceRelease = Schema.Struct({
+  releasedAt: Schema.DateTimeUtc,
+  releasedBy: Schema.Struct({
+    kind: Schema.Literal("local-user"),
+    /** The signed-in client session the message came from. */
+    sessionId: TrimmedNonEmptyString,
+  }),
+});
+export type OrchestrationV2LinkFenceRelease = typeof OrchestrationV2LinkFenceRelease.Type;
+
+export const OrchestrationV2LinkFenceReleaseJson = OrchestrationV2LinkFenceRelease.mapFields(
+  (fields) => ({ ...fields, releasedAt: Schema.DateTimeUtcFromString }),
+);
+
+/** The link that still fences a thread: a below-full-access origin no person has taken over. */
+export const threadLinkFence = (thread: {
+  readonly linkOrigin?: OrchestrationV2LinkOrigin | undefined;
+  readonly linkFenceRelease?: OrchestrationV2LinkFenceRelease | null | undefined;
+}): OrchestrationV2LinkOrigin | undefined =>
+  thread.linkOrigin !== undefined &&
+  linkOriginIsFenced(thread.linkOrigin) &&
+  thread.linkFenceRelease == null
+    ? thread.linkOrigin
+    : undefined;
+
+/**
  * The thread in a linked environment that delegated this one, when it did:
  * this thread is that parent's subagent, run here instead of there.
  */
@@ -458,6 +489,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
+  linkFenceRelease: Schema.optional(Schema.NullOr(OrchestrationV2LinkFenceRelease)),
   delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
   lineage: OrchestrationV2AppThreadLineage,
   forkedFrom: Schema.NullOr(
@@ -1901,6 +1933,7 @@ export const OrchestrationV2DomainEvent = Schema.Union([
       "thread.unsnoozed",
       "thread.pinned",
       "thread.auto-settle-set",
+      "thread.link-fence-released",
       "thread.unpinned",
       "thread.pin-reordered",
       "thread.active-reordered",
@@ -2110,6 +2143,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
+  linkFenceRelease: Schema.optional(Schema.NullOr(OrchestrationV2LinkFenceRelease)),
   delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
   latestRunId: Schema.NullOr(RunId),
   latestRunRequestedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -2292,6 +2326,7 @@ export type OrchestrationV2StoredEvent = typeof OrchestrationV2StoredEvent.Type;
 
 export const OrchestrationV2AppThreadJson = OrchestrationV2AppThread.mapFields((fields) => ({
   ...fields,
+  linkFenceRelease: Schema.optional(Schema.NullOr(OrchestrationV2LinkFenceReleaseJson)),
   createdAt: Schema.DateTimeUtcFromString,
   updatedAt: Schema.DateTimeUtcFromString,
   archivedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
@@ -2729,6 +2764,7 @@ export type OrchestrationV2LatestVisibleMessageSummaryJson =
 
 export const OrchestrationV2ThreadShellJson = OrchestrationV2ThreadShell.mapFields((fields) => ({
   ...fields,
+  linkFenceRelease: Schema.optional(Schema.NullOr(OrchestrationV2LinkFenceReleaseJson)),
   latestRunRequestedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   latestRunStartedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   latestRunCompletedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
@@ -2791,6 +2827,7 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
       "thread.unsnoozed",
       "thread.pinned",
       "thread.auto-settle-set",
+      "thread.link-fence-released",
       "thread.unpinned",
       "thread.pin-reordered",
       "thread.active-reordered",
@@ -3426,6 +3463,17 @@ const OrchestrationV2InternalCommand = Schema.Union([
     guestMessageId: GuestMessageId,
     text: Schema.String,
     attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  }),
+  /**
+   * A person at this environment took over a thread a fenced link started (`linkFenceRelease`).
+   * Only the server issues it, from a message one of the user's own clients sent; no client or
+   * MCP tool can dispatch it.
+   */
+  Schema.Struct({
+    type: Schema.Literal("thread.link-fence.release"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    releasedBy: OrchestrationV2LinkFenceRelease.fields.releasedBy,
   }),
   /** Moves a thread to a project rooted at the folder it already works in, so its cwd never changes. */
   Schema.Struct({

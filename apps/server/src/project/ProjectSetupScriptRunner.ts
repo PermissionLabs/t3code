@@ -1,4 +1,4 @@
-import { linkOriginIsFenced, ProjectId, type ProjectScript, ThreadId } from "@t3tools/contracts";
+import { ProjectId, type ProjectScript, ThreadId, threadLinkFence } from "@t3tools/contracts";
 import {
   projectScriptRuntimeEnv,
   projectScriptTerminalInput,
@@ -368,7 +368,7 @@ export const make = Effect.gen(function* () {
           }),
       ),
     );
-    if (thread?.linkOrigin !== undefined && linkOriginIsFenced(thread.linkOrigin))
+    if (thread != null && threadLinkFence(thread) !== undefined)
       return { status: "skipped-for-link" } as const;
     const suppliedProject = input.project;
     const projectById =

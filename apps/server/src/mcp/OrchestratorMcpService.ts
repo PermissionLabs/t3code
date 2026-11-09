@@ -2833,7 +2833,9 @@ const make = Effect.gen(function* () {
                   interactionMode,
                   branch: parent.thread.branch,
                   worktreePath: parent.thread.worktreePath,
-                  ...(parent.thread.linkOrigin === undefined
+                  // A thread a person here took over starts tasks as this environment's own.
+                  ...(parent.thread.linkOrigin === undefined ||
+                  parent.thread.linkFenceRelease != null
                     ? {}
                     : { linkOrigin: parent.thread.linkOrigin }),
                 })

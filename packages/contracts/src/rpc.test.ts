@@ -35,6 +35,23 @@ describe("WebSocket RPC contracts", () => {
     ).toBe(true);
   });
 
+  it("never lets a client lift a link's fence itself", () => {
+    const dispatchCommand = WsRpcGroup.requests.get(ORCHESTRATION_V2_WS_METHODS.dispatchCommand);
+    if (dispatchCommand === undefined) throw new Error("dispatchCommand is not registered");
+    const decode = Schema.decodeUnknownExit(dispatchCommand.payloadSchema);
+
+    expect(
+      Exit.isFailure(
+        decode({
+          type: "thread.link-fence.release",
+          commandId: "forged-release",
+          threadId: "thread-1",
+          releasedBy: { kind: "local-user", sessionId: "session-1" },
+        }),
+      ),
+    ).toBe(true);
+  });
+
   it("lets the server pick a new worktree's folder", () => {
     const createWorktree = WsRpcGroup.requests.get(WS_METHODS.vcsCreateWorktree);
     if (createWorktree === undefined) throw new Error("vcs.createWorktree is not registered");

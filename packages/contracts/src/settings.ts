@@ -1322,6 +1322,14 @@ export const ServerSettings = Schema.Struct({
    * events. Independent of `delegatedTaskLifecycle`. Off by default.
    */
   launchedThreadTracking: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * A person here messaging a thread a fenced link started, from their own client (never over a
+   * link), lifts that link's fence on it for good, so its agents work like this environment's
+   * own. Off by default.
+   */
+  releaseLinkFenceOnUserTakeover: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
   /** Bad entries drop alone, so a hand edit cannot reset settings. */
   threadHooks: Schema.Array(Schema.Unknown).pipe(
     Schema.decodeTo(
@@ -1716,6 +1724,7 @@ export const ServerSettingsPatch = Schema.Struct({
   linkedEnvironmentsEnabled: Schema.optionalKey(Schema.Boolean),
   delegatedTaskLifecycle: Schema.optionalKey(Schema.Boolean),
   launchedThreadTracking: Schema.optionalKey(Schema.Boolean),
+  releaseLinkFenceOnUserTakeover: Schema.optionalKey(Schema.Boolean),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({
       schemaVersion: Schema.optionalKey(Schema.Literal(1)),

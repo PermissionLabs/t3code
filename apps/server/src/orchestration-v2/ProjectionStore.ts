@@ -830,6 +830,7 @@ export function applyToProjection(
     case "thread.snoozed":
     case "thread.unsnoozed":
     case "thread.auto-settle-set":
+    case "thread.link-fence-released":
     case "thread.pinned":
     case "thread.unpinned":
     case "thread.pin-reordered":
@@ -1606,6 +1607,9 @@ export function threadShellFromProjection(
     ...(projection.thread.linkOrigin === undefined
       ? {}
       : { linkOrigin: projection.thread.linkOrigin }),
+    ...(projection.thread.linkFenceRelease == null
+      ? {}
+      : { linkFenceRelease: projection.thread.linkFenceRelease }),
     ...(projection.thread.delegatedFrom === undefined
       ? {}
       : { delegatedFrom: projection.thread.delegatedFrom }),
@@ -1887,6 +1891,9 @@ function shellFromState(input: {
     ...(input.state.thread.linkOrigin === undefined
       ? {}
       : { linkOrigin: input.state.thread.linkOrigin }),
+    ...(input.state.thread.linkFenceRelease == null
+      ? {}
+      : { linkFenceRelease: input.state.thread.linkFenceRelease }),
     ...(input.state.thread.delegatedFrom === undefined
       ? {}
       : { delegatedFrom: input.state.thread.delegatedFrom }),
@@ -1982,6 +1989,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             case "thread.snoozed":
             case "thread.unsnoozed":
             case "thread.auto-settle-set":
+            case "thread.link-fence-released":
             case "thread.pinned":
             case "thread.unpinned":
             case "thread.pin-reordered":
@@ -2796,6 +2804,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             event.type !== "thread.snoozed" &&
             event.type !== "thread.unsnoozed" &&
             event.type !== "thread.auto-settle-set" &&
+            event.type !== "thread.link-fence-released" &&
             event.type !== "thread.pinned" &&
             event.type !== "thread.unpinned" &&
             event.type !== "thread.pin-reordered" &&

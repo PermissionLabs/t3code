@@ -100,7 +100,13 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
         });
       }
       // The remote parent delegated the source thread, not its forks.
-      const { delegatedFrom: _delegatedFrom, ...inherited } = input.sourceProjection.thread;
+      // A takeover is of that thread only: a fork of it starts fenced again until a person here
+      // messages the fork, so a link cannot fork its way out of the fence.
+      const {
+        delegatedFrom: _delegatedFrom,
+        linkFenceRelease: _linkFenceRelease,
+        ...inherited
+      } = input.sourceProjection.thread;
       const targetThread: OrchestrationV2AppThread = {
         ...inherited,
         // PR context follows the conversation; watching remains the source thread's responsibility.

@@ -48,6 +48,8 @@ interface ChatHeaderProps {
   activeThreadId: ThreadId;
   activeThreadTitle: string;
   activeThreadLinkOrigin?: string | null | undefined;
+  /** A person here took the linked thread over, so its agents are no longer limited to the link. */
+  activeThreadLinkFenceReleased?: boolean | undefined;
   isServerThread: boolean;
   activeProject: EnvironmentProject | null;
   parentThreadLink: { threadId: ThreadId; title: string } | null;
@@ -75,6 +77,7 @@ export const ChatHeader = memo(function ChatHeader({
   activeThreadId,
   activeThreadTitle,
   activeThreadLinkOrigin,
+  activeThreadLinkFenceReleased,
   isServerThread,
   activeProject,
   parentThreadLink,
@@ -425,6 +428,9 @@ export const ChatHeader = memo(function ChatHeader({
               </TooltipTrigger>
               <TooltipPopup side="top">
                 Started by an agent on {activeThreadLinkOrigin} through a linked environment.
+                {activeThreadLinkFenceReleased
+                  ? " You took it over, so its agents now work like this machine's own."
+                  : null}
               </TooltipPopup>
             </Tooltip>
           ) : null}

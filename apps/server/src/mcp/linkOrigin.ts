@@ -11,22 +11,30 @@ import type { Caller } from "./threadAccess.ts";
 /**
  * Below full access, work a link starts here (all of it carries that session in `linkOrigin`)
  * may change only work from the same link: not the user's threads, projects or settings, nor
- * this environment's links. Reads are not fenced. It is a routing rule for T3's tools; agents
- * still run as this environment's user, so a full-access link is not fenced at all.
+ * this environment's links. Reads are not fenced. A full-access link is not fenced at all.
  */
+
+// A thread a person here took over (`linkFenceRelease`) is this environment's own: unfenced,
+// and out of the starting link's reach.
 
 /** The link a caller acts for: its own session, or the link that started its thread. */
 export const callerLinkOrigin = (
   caller: Pick<Caller, "scope" | "caller">,
 ): OrchestrationV2LinkOrigin | undefined =>
-  caller.caller?.linkOrigin ??
-  (caller.scope.client?.linked === true
+  // A takeover drops only what the thread carried: a linked client stays that link regardless.
+  (caller.caller?.linkFenceRelease == null ? caller.caller?.linkOrigin : undefined) ??
+  linkedClientOrigin(caller);
+
+const linkedClientOrigin = (
+  caller: Pick<Caller, "scope">,
+): OrchestrationV2LinkOrigin | undefined =>
+  caller.scope.client?.linked === true
     ? {
         sessionId: caller.scope.client.sessionId,
         label: caller.scope.client.label,
         access: caller.scope.client.access,
       }
-    : undefined);
+    : undefined;
 
 /** The link that fences a caller, if any: one paired below full access. */
 const fencingLinkOrigin = (caller: Pick<Caller, "scope" | "caller">) => {
@@ -43,10 +51,11 @@ const outsideLink = (origin: OrchestrationV2LinkOrigin, message: string) =>
 /** A thread a fenced caller may change: one its own link started. */
 export const assertSameLink = (
   caller: Pick<Caller, "scope" | "caller">,
-  target: Pick<OrchestrationV2ThreadShell, "id" | "linkOrigin">,
+  target: Pick<OrchestrationV2ThreadShell, "id" | "linkOrigin" | "linkFenceRelease">,
 ) => {
   const origin = fencingLinkOrigin(caller);
-  return origin === undefined || target.linkOrigin?.sessionId === origin.sessionId
+  return origin === undefined ||
+    (target.linkOrigin?.sessionId === origin.sessionId && target.linkFenceRelease == null)
     ? Effect.void
     : Effect.fail(outsideLink(origin, `it may change only threads that link started.`));
 };
