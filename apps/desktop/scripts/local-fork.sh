@@ -56,6 +56,41 @@ build() {
   vp run build:desktop
   git rev-parse HEAD > "$built"
 }
+# Pushes custom/local (only that branch, never forced) to origin with the
+# human gh login. The token is read once per run (GH_TOKEN/GITHUB_TOKEN, else
+# 1Password's gh plugin with one Touch ID) and reaches git only through
+# GIT_CONFIG_* in the environment: no argv, no disk, no credential helper, no
+# terminal prompt. Fetching needs no token: both remotes are public.
+pushed_count() { git rev-list --count refs/remotes/origin/custom/local..refs/heads/custom/local 2>/dev/null || printf '?'; }
+push_fork() {
+  local token='' header n
+  n=$(pushed_count)
+  if [ "$n" = 0 ]; then printf 'origin/custom/local is up to date.\n'; return 0; fi
+  if ! git merge-base --is-ancestor refs/remotes/origin/custom/local refs/heads/custom/local; then
+    printf 'origin/custom/local has commits that local custom/local lacks. Not pushing (no force).\n' >&2
+    return 1
+  fi
+  token=${GH_TOKEN:-${GITHUB_TOKEN:-}}
+  if [ -z "$token" ] && command -v op >/dev/null 2>&1; then
+    printf 'Approve 1Password Touch ID for gh (one push).\n'
+    token=$(op plugin run -- gh auth token 2>/dev/null) || token=''
+  fi
+  if [ -z "$token" ]; then
+    printf '%s local commit(s) not pushed. Push later: apps/desktop/scripts/local-fork.sh push\n' "$n" >&2
+    return 1
+  fi
+  header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"
+  token=''
+  if ! GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=2 \
+    GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0='' \
+    GIT_CONFIG_KEY_1=http.https://github.com/.extraheader GIT_CONFIG_VALUE_1="$header" \
+    git push origin refs/heads/custom/local:refs/heads/custom/local; then
+    printf 'A 403 means the gh token cannot write to origin (a fine-grained token needs Contents: write on it).\n' >&2
+    printf '%s local commit(s) not pushed. Push later: apps/desktop/scripts/local-fork.sh push\n' "$n" >&2
+    return 1
+  fi
+  printf 'Pushed %s commit(s) to origin/custom/local.\n' "$n"
+}
 
 case "$action" in
   status)
@@ -107,8 +142,13 @@ case "$action" in
       fail 'Merge stopped. Resolve and commit conflicts, or use git merge --abort. No build or push was attempted.'
     fi
     build
-    git push origin HEAD:refs/heads/custom/local
+    push_fork || true
     printf 'Updated and built. Run apps/desktop/scripts/local-fork.sh start. Recovery: %s\n' "$backup"
     ;;
-  *) fail 'Usage: apps/desktop/scripts/local-fork.sh {status|build|start|update}' ;;
+  push)
+    git rev-parse --verify --quiet refs/heads/custom/local >/dev/null || fail 'No local custom/local branch.'
+    git fetch origin refs/heads/custom/local:refs/remotes/origin/custom/local
+    push_fork
+    ;;
+  *) fail 'Usage: apps/desktop/scripts/local-fork.sh {status|build|start|update|push}' ;;
 esac
