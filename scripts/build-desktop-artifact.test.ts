@@ -29,6 +29,7 @@ import {
   parseWslRuntimeArchiveMembers,
   readWorkspaceConfig,
   createBuildConfig,
+  DesktopLocalForkHomeError,
   DESKTOP_FILE_EXCLUSIONS,
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
@@ -541,6 +542,81 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       Effect.provide(
         ConfigProvider.layer(
           ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "pingdotgg/t3code" } }),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("keeps the official identity and no launch environment by default", () =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "mac",
+        "dir",
+        "0.1.6",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+      assert.equal(config.appId, "com.t3tools.t3code");
+      assert.equal(config.productName, "T3 Code (Beta)");
+      const mac = config.mac as { extendInfo: Record<string, unknown> };
+      assert.notProperty(mac.extendInfo, "LSEnvironment");
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
+  it.effect("gives a local fork build its own identity and launch environment", () =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "mac",
+        "dir",
+        "0.1.6",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+      assert.equal(config.appId, "com.example.fork");
+      assert.equal(config.productName, "T3 Code (Custom)");
+      const mac = config.mac as { extendInfo: Record<string, unknown> };
+      assert.deepStrictEqual(mac.extendInfo.LSEnvironment, {
+        T3CODE_HOME: "/Users/alice/.t3-custom",
+        T3CODE_LOCAL_FORK: "1",
+        T3CODE_DISABLE_AUTO_UPDATE: "true",
+        T3CODE_DESKTOP_APP_USER_MODEL_ID: "com.example.fork",
+      });
+    }).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({
+            env: {
+              T3CODE_DESKTOP_APP_ID: "com.example.fork",
+              T3CODE_DESKTOP_PRODUCT_NAME: "T3 Code (Custom)",
+              T3CODE_LOCAL_FORK: "1",
+              T3CODE_HOME: "/Users/alice/.t3-custom",
+            },
+          }),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("rejects a local fork build without an absolute data directory", () =>
+    Effect.gen(function* () {
+      const failure = yield* createBuildConfig(
+        "mac",
+        "dir",
+        "0.1.6",
+        false,
+        false,
+        undefined,
+        undefined,
+      ).pipe(Effect.flip);
+      assert.instanceOf(failure, DesktopLocalForkHomeError);
+    }).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({ env: { T3CODE_LOCAL_FORK: "1", T3CODE_HOME: "~/.t3-custom" } }),
         ),
       ),
     ),

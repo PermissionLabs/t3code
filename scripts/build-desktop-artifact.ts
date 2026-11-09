@@ -2754,6 +2754,52 @@ export function resolveDesktopProductName(version: string): string {
     : (desktopPackageJson.productName ?? "T3 Code");
 }
 
+// Overrides let a local fork install beside the official app (distinct bundle id and name).
+const DesktopIdentityConfig = Config.all({
+  appId: Config.String("T3CODE_DESKTOP_APP_ID").pipe(Config.option),
+  productName: Config.String("T3CODE_DESKTOP_PRODUCT_NAME").pipe(Config.option),
+  localFork: Config.Boolean("T3CODE_LOCAL_FORK").pipe(Config.withDefault(false)),
+  t3Home: Config.String("T3CODE_HOME").pipe(Config.option),
+});
+
+const nonEmpty = (value: Option.Option<string>): string | undefined => {
+  const trimmed = Option.getOrUndefined(value)?.trim();
+  return trimmed ? trimmed : undefined;
+};
+
+export class DesktopLocalForkHomeError extends Schema.TaggedError<DesktopLocalForkHomeError>()(
+  "DesktopLocalForkHomeError",
+  { t3Home: Schema.optional(Schema.String) },
+) {
+  override get message(): string {
+    return `T3CODE_LOCAL_FORK builds need T3CODE_HOME set to an absolute data directory (got ${this.t3Home ?? "nothing"}).`;
+  }
+}
+
+export const resolveDesktopIdentity = Effect.fn("resolveDesktopIdentity")(function* (
+  version: string,
+) {
+  const env = yield* DesktopIdentityConfig;
+  const appId = nonEmpty(env.appId) ?? DESKTOP_APP_ID;
+  const productName = nonEmpty(env.productName) ?? resolveDesktopProductName(version);
+  if (!env.localFork) {
+    return { appId, productName, launchEnvironment: undefined };
+  }
+  // Finder and Dock launches skip the shell, so the packaged app carries the fork
+  // environment itself: same data directory as local-fork.sh start, no auto-update.
+  const t3Home = nonEmpty(env.t3Home);
+  if (!t3Home || !t3Home.startsWith("/")) {
+    return yield* new DesktopLocalForkHomeError({ t3Home });
+  }
+  const launchEnvironment: Record<string, string> = {
+    T3CODE_HOME: t3Home,
+    T3CODE_LOCAL_FORK: "1",
+    T3CODE_DISABLE_AUTO_UPDATE: "true",
+    T3CODE_DESKTOP_APP_USER_MODEL_ID: appId,
+  };
+  return { appId, productName, launchEnvironment };
+});
+
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   platform: typeof BuildPlatform.Type,
   target: string,
@@ -2770,10 +2816,11 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
 ) {
+  const identity = yield* resolveDesktopIdentity(version);
   const buildConfig: Record<string, unknown> = {
     afterPack: (yield* Path.Path).join(yield* RepoRoot, "scripts/prepare-server-compile-cache.cjs"),
-    appId: DESKTOP_APP_ID,
-    productName: resolveDesktopProductName(version),
+    appId: identity.appId,
+    productName: identity.productName,
     artifactName: "T3-Code-${version}-${arch}.${ext}",
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
     files: [
@@ -2844,6 +2891,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
             LSItemContentTypes: ["public.html", "public.xhtml"],
           },
         ],
+        ...(identity.launchEnvironment ? { LSEnvironment: identity.launchEnvironment } : {}),
       },
       protocols: [
         {
@@ -4044,7 +4092,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   if (options.platform === "win") {
     yield* validateWindowsPackagedPayload({
       stageDistDir,
-      appExecutableName: `${resolveDesktopProductName(appVersion)}.exe`,
+      appExecutableName: `${(yield* resolveDesktopIdentity(appVersion)).productName}.exe`,
       targetArch: options.arch,
       appVersion,
       expectWslRuntime: bundlesWslRuntime({
