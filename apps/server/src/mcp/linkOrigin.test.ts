@@ -47,7 +47,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as LinkFenceTakeover from "../orchestration-v2/LinkFenceTakeover.ts";
-import { assertNotLinked, callerLinkOrigin } from "./linkOrigin.ts";
+import { assertNotLinked, callerLinkOrigin, launchSourceFromLink } from "./linkOrigin.ts";
 import type { Caller } from "./threadAccess.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
@@ -104,6 +104,7 @@ const layerLaunches = Layer.effect(
             worktreePath: null,
             ...(input.linkOrigin === undefined ? {} : { linkOrigin: input.linkOrigin }),
             ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
+            ...(input.launchedFrom === undefined ? {} : { launchedFrom: input.launchedFrom }),
             createdBy: input.createdBy,
             creationSource: input.creationSource,
           })
@@ -723,6 +724,182 @@ it.layer(Layer.provideMerge(layerTools, layerOrchestration))("a person here", (i
       );
       assert.equal(fork.targetThread.linkFenceRelease, undefined);
       assert.equal(fork.targetThread.linkOrigin?.sessionId, "laptop");
+    }),
+  );
+});
+
+// A link's launch names the thread there that launched it, for display only.
+it.layer(Layer.provideMerge(layerTools, layerOrchestration))("a thread a link launched", (it) => {
+  const laptopParent = {
+    environmentId: "environment-laptop",
+    threadId: "thread-laptop-parent",
+    title: "Laptop parent",
+  };
+  const launchedFromOf = (threadId: ThreadId) =>
+    ProjectionStore.ProjectionStoreV2.pipe(
+      Effect.flatMap((projections) => projections.getThreadShell(threadId)),
+      Effect.map((shell) => shell?.launchedFrom),
+    );
+
+  it.effect("keeps the thread there only when the link itself sends it, cleaned", () =>
+    Effect.gen(function* () {
+      const launched = yield* launch(laptop, "Launched from the laptop", {
+        launchedFrom: {
+          ...laptopParent,
+          title: `  Fix\u202E the\n\tbuild\u0007 ${"x".repeat(300)}`,
+        },
+      });
+      const launchedFrom = yield* launchedFromOf(launched);
+      assert.equal(launchedFrom?.environmentId, "environment-laptop");
+      assert.equal(launchedFrom?.threadId, "thread-laptop-parent");
+      assert.isTrue(launchedFrom?.title.startsWith("Fix the build xxx"));
+      assert.equal(Array.from(launchedFrom?.title ?? "").length, 120);
+      assert.isTrue(launchedFrom?.title.endsWith("\u2026"));
+
+      // An older environment sends none, and the thread is the link's as before.
+      const older = yield* launch(laptop, "From an older laptop");
+      assert.equal(yield* launchedFromOf(older), undefined);
+      assert.equal(
+        (yield* ProjectionStore.ProjectionStoreV2.pipe(
+          Effect.flatMap((projections) => projections.getThreadShell(older)),
+        ))?.linkOrigin?.sessionId,
+        "laptop",
+      );
+
+      // Ids that could not go into a thread link are dropped, not stored.
+      for (const bad of [
+        { ...laptopParent, threadId: "thread/../../etc" },
+        { ...laptopParent, environmentId: "env laptop" },
+        { ...laptopParent, threadId: "t".repeat(300) },
+      ]) {
+        const dropped = yield* launch(laptop, "Odd ids", { launchedFrom: bad });
+        assert.equal(yield* launchedFromOf(dropped), undefined);
+      }
+
+      // Not a link: an outside agent cannot claim a thread there.
+      const plain = yield* launch(claudeCode, "Claims a source", { launchedFrom: laptopParent });
+      assert.equal(yield* launchedFromOf(plain), undefined);
+
+      // Nor can an agent in the link's thread here: only the link says which thread there.
+      const agentHere = {
+        ...laptop,
+        thread: {
+          threadId: launched,
+          providerSessionId: "session:provider",
+          providerInstanceId: instanceId,
+        },
+      };
+      const laptopOrigin = {
+        sessionId: "laptop",
+        label: "T3 Code · laptop",
+        access: "auto" as const,
+      };
+      const sent = {
+        environmentId: EnvironmentId.make("environment-laptop"),
+        threadId: ThreadId.make("thread-laptop-parent"),
+        title: "Laptop parent",
+      };
+      assert.deepEqual(launchSourceFromLink(laptop, laptopOrigin, sent), { launchedFrom: sent });
+      assert.deepEqual(launchSourceFromLink(agentHere, laptopOrigin, sent), {});
+      assert.deepEqual(
+        launchSourceFromLink({ ...agentHere, client: undefined }, laptopOrigin, sent),
+        {},
+      );
+      assert.deepEqual(launchSourceFromLink(claudeCode, undefined, sent), {});
+      assert.deepEqual(launchSourceFromLink(desk, laptopOrigin, sent), {});
+      assert.deepEqual(launchSourceFromLink(laptop, laptopOrigin, undefined), {});
+    }),
+  );
+
+  it.effect("changes no fence, no takeover, and no link's reach", () =>
+    Effect.gen(function* () {
+      yield* setTakeover(true);
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const users = yield* usersOwnThread;
+      // A link naming a thread the user owns here, or another link's, gains nothing by it.
+      const deskLaunch = yield* launch(desk, "The desk's");
+      const claims = yield* launch(laptop, "Claims to come from here", {
+        launchedFrom: { environmentId: "environment:box", threadId: users, title: "Users" },
+      });
+      const claimsDesk = yield* launch(laptop, "Claims the desk's", {
+        launchedFrom: { environmentId: "environment:box", threadId: deskLaunch, title: "Desk" },
+      });
+      for (const threadId of [claims, claimsDesk]) {
+        assert.equal(
+          (yield* projections.getThreadShell(threadId))?.linkOrigin?.sessionId,
+          "laptop",
+        );
+        assert.isTrue(yield* fenced(threadId));
+      }
+      for (const target of [users, deskLaunch]) {
+        const renamed = yield* call(laptop, "t3_thread_update", {
+          threadId: target,
+          action: "rename",
+          title: "Renamed by the laptop",
+        });
+        assert.equal(failureCode(renamed), "capability_denied");
+      }
+      // The desk still may not change the laptop's thread that names the desk's.
+      assert.equal(
+        failureCode(
+          yield* call(desk, "t3_thread_update", {
+            threadId: claimsDesk,
+            action: "rename",
+            title: "Renamed by the desk",
+          }),
+        ),
+        "capability_denied",
+      );
+
+      // A takeover works as it did, and the source stays only for display.
+      const launched = yield* launch(laptop, "Taken over", { launchedFrom: laptopParent });
+      assert.isTrue(yield* fenced(launched));
+      yield* messageFromUser(launched, "launched-from-takeover");
+      assert.isDefined(yield* releaseOf(launched));
+      assert.isFalse(yield* fenced(launched));
+      assert.deepEqual(yield* launchedFromOf(launched), laptopParent);
+    }),
+  );
+
+  it.effect("is not carried into forks or subagents here", () =>
+    Effect.gen(function* () {
+      const launched = yield* launch(laptop, "Forked here", { launchedFrom: laptopParent });
+      const thread = (yield* ThreadManagement.ThreadManagementService.pipe(
+        Effect.flatMap((threads) => threads.getThreadProjection(launched)),
+      )).thread;
+      assert.deepEqual(thread.launchedFrom, laptopParent);
+      const child = makeSubagentChildThread({
+        parentThread: thread,
+        childThreadId: ThreadId.make("thread:launched-child"),
+        parentNodeId: NodeId.make("node:launched-child"),
+        activeProviderThreadId: null,
+        providerInstanceId: instanceId,
+        modelSelection: { instanceId, model: "gpt-5" },
+        title: "Child",
+        now: thread.createdAt,
+        createdBy: "agent",
+        creationSource: "mcp",
+      });
+      assert.equal(child.launchedFrom, undefined);
+      assert.deepEqual(child.linkOrigin, thread.linkOrigin);
+      const fork = yield* ThreadForkService.ThreadForkServiceV2.pipe(
+        Effect.flatMap((forks) =>
+          forks.plan({
+            sourceProjection: { thread },
+            sourceRun: { id: RunId.make("run:source"), status: "completed" } as OrchestrationV2Run,
+            sourceProviderThread: undefined,
+            canonicalSourcePoint: { threadId: launched },
+            transferId: ContextTransferId.make("transfer:launched-fork"),
+            targetThreadId: ThreadId.make("thread:launched-fork"),
+            createdBy: "agent",
+            creationSource: "mcp",
+            createdAt: thread.createdAt,
+          }),
+        ),
+        Effect.provide(ThreadForkService.layer),
+      );
+      assert.equal(fork.targetThread.launchedFrom, undefined);
+      assert.deepEqual(fork.targetThread.linkOrigin, thread.linkOrigin);
     }),
   );
 });

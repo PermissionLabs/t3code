@@ -4,6 +4,9 @@ import * as Schema from "effect/Schema";
 
 import { NodeId, RunAttemptId, TrimmedNonEmptyString } from "./index.ts";
 import {
+  cleanLinkedThreadSource,
+  cleanLinkedThreadTitle,
+  LINKED_THREAD_TITLE_MAX_LENGTH,
   latestProviderTurnForAttempt,
   OrchestrationV2ProviderCapabilities,
   OrchestrationV2ProviderThread,
@@ -637,5 +640,31 @@ describe("latestProviderTurnForAttempt", () => {
     ];
     expect(latestProviderTurnForAttempt(turns, RunAttemptId.make("goal-attempt"))?.id).toBe("last");
     expect(latestProviderTurnForAttempt(turns, null)).toBeUndefined();
+  });
+});
+
+describe("a linked environment's thread, as shown here", () => {
+  it("keeps a title to one visible, bounded line", () => {
+    expect(cleanLinkedThreadTitle("  배포 준비\n\t점검  ")).toBe("배포 준비 점검");
+    // Bidi overrides, zero-width and control characters cannot hide or reorder text.
+    expect(cleanLinkedThreadTitle("abc\u202Edef\u2066g\u200Bh\u0000i\u001Bj")).toBe(
+      "abc def g h i j",
+    );
+    // Emoji sequences survive; only whole characters are counted and cut.
+    expect(cleanLinkedThreadTitle("Ship 👩‍💻")).toBe("Ship 👩‍💻");
+    const long = cleanLinkedThreadTitle("가".repeat(500));
+    expect(Array.from(long)).toHaveLength(LINKED_THREAD_TITLE_MAX_LENGTH);
+    expect(long.endsWith("\u2026")).toBe(true);
+  });
+
+  it("keeps only ids a thread link can carry", () => {
+    const source = { environmentId: "env-1", threadId: "thread:1", title: "T" } as Parameters<
+      typeof cleanLinkedThreadSource
+    >[0];
+    expect(cleanLinkedThreadSource(source)).toEqual(source);
+    for (const bad of ["a/b", "a b", "a)b", "a?b", "a#b", "x".repeat(257)]) {
+      expect(cleanLinkedThreadSource({ ...source, threadId: bad as never })).toBeUndefined();
+      expect(cleanLinkedThreadSource({ ...source, environmentId: bad as never })).toBeUndefined();
+    }
   });
 });

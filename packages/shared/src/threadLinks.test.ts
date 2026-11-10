@@ -6,6 +6,7 @@ import {
   formatThreadLink,
   guessThreadLinkRef,
   hostedThreadLink,
+  linkedSourceThread,
   parseThreadLinkHref,
   relabelThreadLinks,
   threadLinkCandidates,
@@ -235,5 +236,61 @@ describe("hosted thread links", () => {
     expect(threadLinkRefs("Open https://app.t3.codes/threads/there/t%3A1", local)).toEqual([
       ref("there", "t:1"),
     ]);
+  });
+});
+
+describe("linkedSourceThread", () => {
+  const linkOrigin = { sessionId: "session:mini-1", label: "mini-1", access: "auto" as const };
+  const parent = {
+    environmentId: EnvironmentId.make("env-mini-1"),
+    threadId: ThreadId.make("thread-parent"),
+    title: "Plan the release",
+  };
+
+  it("names the thread there that launched this one, with its thread link", () => {
+    expect(linkedSourceThread({ linkOrigin, launchedFrom: parent })).toEqual({
+      ...parent,
+      link: "t3-thread://v2/env-mini-1/thread-parent",
+      relation: "launched",
+    });
+    expect(
+      parseThreadLinkHref(linkedSourceThread({ linkOrigin, launchedFrom: parent })!.link),
+    ).toEqual({
+      environmentId: parent.environmentId,
+      threadId: parent.threadId,
+    });
+  });
+
+  it("prefers the delegating parent, which makes this thread its subagent", () => {
+    const delegating = { ...parent, threadId: ThreadId.make("thread-delegating") };
+    expect(
+      linkedSourceThread({ linkOrigin, delegatedFrom: delegating, launchedFrom: parent }),
+    ).toMatchObject({ threadId: "thread-delegating", relation: "delegated" });
+  });
+
+  it("is nothing for an older environment that sent none, or for work no link started", () => {
+    expect(linkedSourceThread({ linkOrigin })).toBeNull();
+    expect(linkedSourceThread({ linkOrigin, launchedFrom: null, delegatedFrom: null })).toBeNull();
+    expect(linkedSourceThread({ launchedFrom: parent })).toBeNull();
+    expect(linkedSourceThread({ linkOrigin: null, launchedFrom: parent })).toBeNull();
+  });
+
+  it("shows what was sent cleaned, and drops ids no thread link can carry", () => {
+    const shown = linkedSourceThread({
+      linkOrigin,
+      launchedFrom: { ...parent, title: "\u202Eevil\u0000\n  title\u200B " },
+    });
+    expect(shown?.title).toBe("evil title");
+    expect(
+      linkedSourceThread({ linkOrigin, launchedFrom: { ...parent, title: "\u0007\u202E" } })?.title,
+    ).toBe("Untitled thread");
+    for (const threadId of ["a/b", "a b", "javascript:alert(1)<", "x".repeat(300)]) {
+      expect(
+        linkedSourceThread({
+          linkOrigin,
+          launchedFrom: { ...parent, threadId: ThreadId.make(threadId) },
+        }),
+      ).toBeNull();
+    }
   });
 });

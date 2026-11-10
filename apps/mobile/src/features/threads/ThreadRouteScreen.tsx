@@ -18,6 +18,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthTerminalOperateScope,
   AuthTerminalReadScope,
+  cleanLinkedThreadTitle,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   MessageId,
@@ -30,6 +31,7 @@ import {
   projectScriptTerminalInput,
   resolveProjectScripts,
 } from "@t3tools/shared/projectScripts";
+import { linkedSourceThread } from "@t3tools/shared/threadLinks";
 import { Platform } from "react-native";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -533,14 +535,28 @@ function ThreadRouteContent(
       : scopeThreadRef(delegatedFrom.environmentId, delegatedFrom.threadId);
   // The title it had at delegation, until this client sees the parent itself.
   const delegatedFromThread = useThreadShell(delegatedFromRef);
+  // Display only: what the linked environment sent, cleaned.
+  const linkedSource = selectedThread === null ? null : linkedSourceThread(selectedThread);
+  const launchedFromThread = useThreadShell(
+    linkedSource === null || linkedSource.relation !== "launched"
+      ? null
+      : scopeThreadRef(linkedSource.environmentId, linkedSource.threadId),
+  );
   const headerSubtitle = [
     selectedThreadProject?.title ?? null,
     selectedEnvironmentConnection?.environmentLabel ?? null,
-    // A linked environment's delegated task names its parent; other linked work its origin.
+    // A linked environment's delegated task names its parent; other linked work its origin,
+    // and the thread there that launched it when that environment said which.
     delegatedFrom !== null
       ? `Subagent of ${delegatedFromThread?.title ?? delegatedFrom.title}`
       : selectedThread?.linkOrigin
-        ? `From ${selectedThread.linkOrigin.label}`
+        ? linkedSource === null
+          ? `From ${selectedThread.linkOrigin.label}`
+          : `From ${selectedThread.linkOrigin.label} · ${
+              (launchedFromThread == null
+                ? ""
+                : cleanLinkedThreadTitle(launchedFromThread.title)) || linkedSource.title
+            }`
         : null,
   ]
     .filter(Boolean)

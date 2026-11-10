@@ -152,6 +152,8 @@ export interface EnvironmentThreadShell {
   readonly linkFenceReleasedAt?: string | null;
   /** The thread in a linked environment that delegated this one, if one did. */
   readonly delegatedFrom: OrchestrationV2ThreadShell["delegatedFrom"] | null;
+  /** The thread in a linked environment that launched this one, if that environment said. */
+  readonly launchedFrom?: OrchestrationV2ThreadShell["launchedFrom"] | null;
   readonly activeProviderThreadId: OrchestrationV2ThreadShell["activeProviderThreadId"];
   readonly latestRun: ThreadRunSummary | null;
   readonly runtime: ThreadRuntimeSummary | null;
@@ -301,6 +303,7 @@ export function presentThreadShell(
     linkOrigin: thread.linkOrigin ?? null,
     linkFenceReleasedAt: nullableIso(thread.linkFenceRelease?.releasedAt ?? null),
     delegatedFrom: thread.delegatedFrom ?? null,
+    launchedFrom: thread.launchedFrom ?? null,
     activeProviderThreadId: thread.activeProviderThreadId,
     latestRun,
     runtime,

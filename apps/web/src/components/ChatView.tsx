@@ -143,6 +143,9 @@ import { type LegendListRef } from "@legendapp/list/react";
 import { useWorkspaceMutationRefresh } from "../hooks/useWorkspaceMutationRefresh";
 import { DEFAULT_INTERACTION_MODE, type ChatMessage } from "../types";
 import { buildThreadRouteParams } from "../threadRoutes";
+import { cleanLinkedThreadTitle } from "@t3tools/contracts";
+import { linkedSourceThread } from "@t3tools/shared/threadLinks";
+import type { LinkOriginBadgeOrigin } from "./chat/LinkOriginBadge";
 import { useTheme } from "../hooks/useTheme";
 import { copyThreadReference } from "../lib/copyThreadReference";
 import { subscribeSnapShotComposerFocus } from "../lib/desktopSnapShot";
@@ -983,6 +986,44 @@ export default function ChatView(props: ChatViewProps) {
   );
   const browserAvailable = isPreviewSupportedInRuntime() || activeEnvironmentServerBrowser;
   const activeThreadShell = serverThread;
+  // The badge names the linked environment that started this thread, and the thread there
+  // that did when that environment said which. What it sent is shown, never trusted.
+  const linkedSource = activeThreadShell == null ? null : linkedSourceThread(activeThreadShell);
+  const linkedSourceEnvironment = useEnvironment(linkedSource?.environmentId ?? null);
+  const linkedSourceRef =
+    linkedSource === null
+      ? null
+      : scopeThreadRef(linkedSource.environmentId, linkedSource.threadId);
+  // Its title now, while this client sees it; the one it had at launch otherwise.
+  const linkedSourceShell = useQuietThreadShell(linkedSourceRef);
+  const linkOriginBadge: LinkOriginBadgeOrigin | null =
+    activeThreadShell?.linkOrigin == null
+      ? null
+      : {
+          label: activeThreadShell.linkOrigin.label,
+          source:
+            linkedSource === null || linkedSourceRef === null
+              ? null
+              : {
+                  title:
+                    (linkedSourceShell == null
+                      ? null
+                      : cleanLinkedThreadTitle(linkedSourceShell.title)) || linkedSource.title,
+                  link: linkedSource.link,
+                  relation: linkedSource.relation,
+                  // Only an environment this client is connected to can open it.
+                  ...(linkedSourceEnvironment === null
+                    ? {}
+                    : {
+                        open: (): void => {
+                          void navigate({
+                            to: "/$environmentId/$threadId",
+                            params: buildThreadRouteParams(linkedSourceRef),
+                          });
+                        },
+                      }),
+                },
+        };
   const timelineThreadError =
     serverRuntime?.status === "failed" &&
     serverRuntime.lastErrorClass === "usage_limit" &&
@@ -3329,7 +3370,7 @@ export default function ChatView(props: ChatViewProps) {
               activeThreadId={activeThread.id}
               isServerThread={isServerThread}
               activeThreadTitle={activeThread.title}
-              activeThreadLinkOrigin={activeThreadShell?.linkOrigin?.label ?? null}
+              activeThreadLinkOrigin={linkOriginBadge}
               activeThreadLinkFenceReleased={activeThreadShell?.linkFenceReleasedAt != null}
               activeProject={activeProject ?? null}
               parentThreadLink={headerParentThreadLink}

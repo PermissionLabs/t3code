@@ -1,4 +1,11 @@
-import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
+import {
+  cleanLinkedThreadSource,
+  EnvironmentId,
+  type OrchestrationV2LaunchedFrom,
+  type OrchestrationV2LinkOrigin,
+  ThreadId,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -114,6 +121,40 @@ function threadLinkHref(link: ThreadLink): string {
   return link.environmentId === null
     ? `${V1_PREFIX}${link.threadId}`
     : `${V2_PREFIX}${link.environmentId}/${link.threadId}`;
+}
+
+/** The thread in a linked environment that started this one, as a person here is shown it. */
+export interface LinkedSourceThread extends ScopedThreadRef {
+  /** Cleaned: one line, visible characters, bounded. */
+  readonly title: string;
+  /** Its `t3-thread://v2/` link; only ids that fit one are kept. */
+  readonly link: string;
+  /** Whether it delegated this thread as its subagent or launched it as a thread of its own. */
+  readonly relation: "delegated" | "launched";
+}
+
+/**
+ * Which thread in a linked environment started this one, from what that environment sent. For
+ * display only: the other environment wrote it, so it never decides access. Null for threads a
+ * link did not start, and for ones from an environment too old to send it.
+ */
+export function linkedSourceThread(thread: {
+  readonly linkOrigin?: OrchestrationV2LinkOrigin | null | undefined;
+  readonly delegatedFrom?: OrchestrationV2LaunchedFrom | null | undefined;
+  readonly launchedFrom?: OrchestrationV2LaunchedFrom | null | undefined;
+}): LinkedSourceThread | null {
+  if (thread.linkOrigin == null) return null;
+  const relation = thread.delegatedFrom != null ? "delegated" : "launched";
+  const sent = thread.delegatedFrom ?? thread.launchedFrom;
+  const source = sent == null ? undefined : cleanLinkedThreadSource(sent);
+  if (source === undefined) return null;
+  return {
+    ...source,
+    // A title of nothing but hidden characters leaves nothing to show.
+    title: source.title || "Untitled thread",
+    link: threadLinkHref(source),
+    relation,
+  };
 }
 
 const linkLabel = (label: string | undefined) =>

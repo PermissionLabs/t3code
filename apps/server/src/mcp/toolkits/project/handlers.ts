@@ -27,6 +27,7 @@ import * as DateTime from "effect/DateTime";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resolveRuntimeMode } from "../../delegatedTaskModes.ts";
+import { launchSourceFromLink } from "../../linkOrigin.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../threadAccess.ts";
@@ -247,6 +248,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           ...(linkOrigin === undefined ? {} : { linkOrigin }),
           // Kept only alongside linkOrigin: thread.create drops it otherwise.
           ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
+          ...launchSourceFromLink(scope, linkOrigin, input.launchedFrom),
         }).pipe(
           Effect.mapError((error) => {
             if (error._tag === "AttachmentClaimError") {
