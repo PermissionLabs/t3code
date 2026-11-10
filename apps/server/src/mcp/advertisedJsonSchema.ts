@@ -103,4 +103,17 @@ const compact = (schema: Json, optional: boolean): Json => {
  * Decoding still uses the full schema, so each tag's own required fields still apply.
  */
 export const advertisedJsonSchema = (tool: Tool.Any) =>
-  compact(Tool.getJsonSchema(tool), false) as ReturnType<typeof Tool.getJsonSchema>;
+  withoutPeerOnly(compact(Tool.getJsonSchema(tool), false)) as ReturnType<
+    typeof Tool.getJsonSchema
+  >;
+
+/** Parameters only a linked environment sends, which no agent has reason to see or pay for. */
+const PEER_ONLY_PARAMETERS: ReadonlySet<string> = new Set(["launchedFrom"]);
+
+const withoutPeerOnly = (schema: Json): Json => {
+  if (!Predicate.isObject(schema) || !Predicate.isObject(schema.properties)) return schema;
+  const properties = Object.fromEntries(
+    Object.entries(schema.properties).filter(([name]) => !PEER_ONLY_PARAMETERS.has(name)),
+  );
+  return { ...schema, properties };
+};

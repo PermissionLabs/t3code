@@ -43,3 +43,23 @@ it("drops JSON noise, merges tagged unions, and keeps null where it is required"
     required: ["beforeRunId", "every"],
   });
 });
+
+const LaunchParameters = Schema.Struct({
+  title: Schema.String,
+  launchedFrom: Schema.optional(Schema.Struct({ title: Schema.String })),
+});
+const decodeLaunch = Schema.decodeSync(LaunchParameters);
+
+it("leaves out parameters only a linked environment sends", () => {
+  const tool = Tool.make("launch", { parameters: LaunchParameters });
+  expect(advertisedJsonSchema(tool)).toEqual({
+    type: "object",
+    properties: { title: { type: "string" } },
+    required: ["title"],
+  });
+  // Decoding still takes it from a linked environment.
+  expect(decodeLaunch({ title: "T", launchedFrom: { title: "P" } })).toEqual({
+    title: "T",
+    launchedFrom: { title: "P" },
+  });
+});

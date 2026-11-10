@@ -99,11 +99,12 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
           cause: forkableSourceRunStatusError(sourceRun),
         });
       }
-      // The remote parent delegated the source thread, not its forks.
+      // The remote parent delegated or launched the source thread, not its forks.
       // A takeover is of that thread only: a fork of it starts fenced again until a person here
       // messages the fork, so a link cannot fork its way out of the fence.
       const {
         delegatedFrom: _delegatedFrom,
+        launchedFrom: _launchedFrom,
         linkFenceRelease: _linkFenceRelease,
         ...inherited
       } = input.sourceProjection.thread;

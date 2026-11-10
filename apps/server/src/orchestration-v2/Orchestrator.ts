@@ -21,6 +21,7 @@ import {
 import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type ChatAttachment,
+  cleanLinkedThreadSource,
   CommandId,
   type GuestMessageId,
   isCompactionCommandMessage,
@@ -494,6 +495,21 @@ export class OrchestratorV2 extends Context.Service<OrchestratorV2, Orchestrator
 ) {}
 
 /** Run ordinals can skip values: a queued run moves past newer runs when it starts. */
+/**
+ * Only stamped work names the thread there that launched it, so a client cannot claim one. It is
+ * shown, never trusted: nothing reads it to decide access.
+ */
+function launchedFromOf(
+  command: Pick<
+    Extract<OrchestrationV2Command, { type: "thread.create" }>,
+    "linkOrigin" | "launchedFrom"
+  >,
+): Pick<OrchestrationV2AppThread, "launchedFrom"> {
+  if (command.linkOrigin === undefined || command.launchedFrom === undefined) return {};
+  const launchedFrom = cleanLinkedThreadSource(command.launchedFrom);
+  return launchedFrom === undefined ? {} : { launchedFrom };
+}
+
 function nextRunOrdinal(projection: Pick<OrchestrationV2ThreadProjection, "runs">): number {
   return projection.runs.reduce((max, run) => Math.max(max, run.ordinal), 0) + 1;
 }
@@ -2868,6 +2884,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...(command.linkOrigin === undefined || command.delegatedFrom === undefined
         ? {}
         : { delegatedFrom: command.delegatedFrom }),
+      // Display only, and only on stamped work, cleaned again in case a caller skipped it.
+      ...launchedFromOf(command),
       lineage: {
         parentThreadId: null,
         relationshipToParent: null,

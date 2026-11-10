@@ -1,11 +1,13 @@
 import {
   linkOriginIsFenced,
+  type OrchestrationV2LaunchedFrom,
   OrchestratorMcpFailure,
   type OrchestrationV2LinkOrigin,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
+import type * as McpInvocationContext from "./McpInvocationContext.ts";
 import type { Caller } from "./threadAccess.ts";
 
 /**
@@ -67,3 +69,22 @@ export const assertNotLinked = (caller: Pick<Caller, "scope" | "caller">, what: 
     ? Effect.void
     : Effect.fail(outsideLink(origin, `it cannot ${what}.`));
 };
+
+/**
+ * The thread in a linked environment that launched a thread here, as that link sent it. Only the
+ * link itself says, never an agent here, even one in that link's own thread: the launch is
+ * stamped with the link's origin and comes straight from its session. It is shown beside the
+ * link's label and never trusted; the orchestrator cleans it as it stores it.
+ */
+export const launchSourceFromLink = (
+  scope: Pick<McpInvocationContext.McpInvocationScope, "thread" | "client">,
+  linkOrigin: OrchestrationV2LinkOrigin | undefined,
+  launchedFrom: OrchestrationV2LaunchedFrom | undefined,
+): { readonly launchedFrom?: OrchestrationV2LaunchedFrom } =>
+  linkOrigin === undefined ||
+  launchedFrom === undefined ||
+  scope.thread !== undefined ||
+  scope.client?.linked !== true ||
+  scope.client.sessionId !== linkOrigin.sessionId
+    ? {}
+    : { launchedFrom };

@@ -1,4 +1,5 @@
 import {
+  cleanLinkedThreadSource,
   type EnvironmentId,
   type OrchestrationV2LinkOrigin,
   OrchestratorMcpEnvironmentTarget,
@@ -20,6 +21,7 @@ import {
   DispatchModeLimit,
   type DispatchModeRefusal,
 } from "../orchestration-v2/DispatchModeLimit.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as LaunchedThreadTracking from "../peer/LaunchedThreadTracking.ts";
 import { assertNotLinked, assertSameLink, callerLinkOrigin } from "./linkOrigin.ts";
@@ -365,6 +367,40 @@ const takesLinkedEnvironment = (tool: Tool.Any) => {
   );
 };
 
+/**
+ * A thread launched in a linked environment names the thread here that launched it, so that
+ * environment can show which thread opened it. The caller's own `launchedFrom` and
+ * `delegatedFrom` never go: only this environment says which of its threads is the source, and
+ * only `delegate_task` sends a delegated parent. Display only there, never trusted.
+ */
+const withLaunchSource = Effect.fn("McpToolAccess.withLaunchSource")(function* (
+  scope: McpInvocationContext.McpInvocationScope,
+  params: object,
+) {
+  const {
+    launchedFrom: _launchedFrom,
+    delegatedFrom: _delegatedFrom,
+    ...rest
+  } = params as {
+    readonly launchedFrom?: unknown;
+    readonly delegatedFrom?: unknown;
+  };
+  if (scope.thread === undefined) return rest;
+  const threadId = scope.thread.threadId;
+  // Only a title is missing without it; the launch goes ahead either way.
+  const shell = yield* ThreadManagement.ThreadManagementService.pipe(
+    Effect.flatMap((threads) => threads.getThreadShell(threadId)),
+    Effect.orElseSucceed(() => null),
+  );
+  if (shell === null) return rest;
+  const launchedFrom = cleanLinkedThreadSource({
+    environmentId: scope.environmentId,
+    threadId,
+    title: shell.title,
+  });
+  return launchedFrom === undefined ? rest : { ...rest, launchedFrom };
+});
+
 const linksUnavailable = new OrchestratorMcpFailure({
   code: "orchestration_error",
   message: "This environment cannot reach linked environments.",
@@ -408,7 +444,7 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
         yield* (remote as RemoteCheck<typeof params>)(params);
         if (Option.isNone(forwarding)) return yield* linksUnavailable;
         const result = yield* forwarding.value.call(scope, tool, target, {
-          ...params,
+          ...(name === "t3_thread_launch" ? yield* withLaunchSource(scope, params) : params),
           environmentId,
         });
         if (

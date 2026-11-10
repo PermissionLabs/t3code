@@ -20,7 +20,6 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { isTrailingDoubleClick } from "../Sidebar.logic";
-import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
@@ -42,12 +41,14 @@ import { cn } from "~/lib/utils";
 import { textDirection } from "~/textDirection";
 import { useClientSettings } from "../../hooks/useSettings";
 import { GuestShareIndicator } from "./GuestShareControls";
+import { LinkOriginBadge, type LinkOriginBadgeOrigin } from "./LinkOriginBadge";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
   activeThreadId: ThreadId;
   activeThreadTitle: string;
-  activeThreadLinkOrigin?: string | null | undefined;
+  /** The linked environment that started this thread, and the thread there when it said which. */
+  activeThreadLinkOrigin?: LinkOriginBadgeOrigin | null | undefined;
   /** A person here took the linked thread over, so its agents are no longer limited to the link. */
   activeThreadLinkFenceReleased?: boolean | undefined;
   isServerThread: boolean;
@@ -422,17 +423,10 @@ export const ChatHeader = memo(function ChatHeader({
             </Tooltip>
           )}
           {renamingTitle === null && activeThreadLinkOrigin ? (
-            <Tooltip>
-              <TooltipTrigger render={<Badge variant="info" size="sm" />}>
-                From {activeThreadLinkOrigin}
-              </TooltipTrigger>
-              <TooltipPopup side="top">
-                Started by an agent on {activeThreadLinkOrigin} through a linked environment.
-                {activeThreadLinkFenceReleased
-                  ? " You took it over, so its agents now work like this machine's own."
-                  : null}
-              </TooltipPopup>
-            </Tooltip>
+            <LinkOriginBadge
+              origin={activeThreadLinkOrigin}
+              fenceReleased={activeThreadLinkFenceReleased}
+            />
           ) : null}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>

@@ -1,6 +1,8 @@
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  OrchestrationV2DelegatedFrom,
+  OrchestrationV2LaunchedFrom,
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
   ProviderInstanceId,
@@ -493,6 +495,79 @@ it.effect("records a thread launched in a linked environment for its follower, n
     expect(outcomes).toEqual(["t3_thread_launch in environment-box", "here", "here"]);
     expect(recorded).toEqual([
       [supervisedThreadId, box, { ran: "t3_thread_launch in environment-box" }],
+    ]);
+  }),
+);
+
+it.effect("names the launching thread to a linked environment, and only that", () =>
+  Effect.gen(function* () {
+    const forwarded: Array<Record<string, unknown>> = [];
+    const LaunchToolkit = Toolkit.make(
+      Tool.make("t3_thread_launch", {
+        ...probe,
+        parameters: Schema.Struct({
+          environmentId: OrchestratorMcpEnvironmentTarget,
+          launchedFrom: Schema.optional(OrchestrationV2LaunchedFrom),
+          delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+        }),
+      }),
+    );
+    const server = McpHttpServer.toolkitRegistration(
+      LaunchToolkit,
+      McpToolAccess.toLayer(LaunchToolkit, {
+        t3_thread_launch: McpToolAccess.startsThreads(
+          () => ({}),
+          (input) =>
+            Effect.succeed({
+              ran: input.launchedFrom === undefined ? "here" : "here with a claimed source",
+            }),
+          "stamped",
+        ),
+      }),
+    ).pipe(
+      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+      Layer.provideMerge(
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: (threadId) => Effect.succeed(shells.get(threadId) ?? null),
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(PeerForwarding.PeerForwarding)({
+          call: (_scope, tool, environmentId, params) =>
+            Effect.sync(() => {
+              forwarded.push(params as Record<string, unknown>);
+              return { ran: `${tool.name} in ${environmentId}` } as never;
+            }),
+        }),
+      ),
+    );
+    // The agent's own claims never go: only this environment names its thread.
+    const claimed = {
+      launchedFrom: { environmentId: "environment-elsewhere", threadId: "thread:x", title: "X" },
+      delegatedFrom: { environmentId: "environment-elsewhere", threadId: "thread:y", title: "Y" },
+    };
+    const outcomes = yield* Effect.all([
+      call("t3_thread_launch", supervised, { environmentId: box, ...claimed }),
+      call("t3_thread_launch", supervisedClient, { environmentId: box, ...claimed }),
+      call("t3_thread_launch", supervised, { environmentId: here, ...claimed }),
+    ]).pipe(Effect.provide(server));
+    expect(outcomes).toEqual([
+      "t3_thread_launch in environment-box",
+      "t3_thread_launch in environment-box",
+      // Here, the launch handler decides; it keeps a source only from a link (linkOrigin.ts).
+      "here with a claimed source",
+    ]);
+    expect(forwarded).toEqual([
+      {
+        environmentId: box,
+        launchedFrom: {
+          environmentId: "environment",
+          threadId: supervisedThreadId,
+          title: "thread:supervised",
+        },
+      },
+      // A client outside any thread launches from no thread.
+      { environmentId: box },
     ]);
   }),
 );

@@ -170,6 +170,59 @@ export const OrchestrationV2DelegatedFrom = Schema.Struct({
 });
 export type OrchestrationV2DelegatedFrom = typeof OrchestrationV2DelegatedFrom.Type;
 
+/**
+ * The linked environment's thread whose agent launched this one as a top-level thread. Display
+ * only: the other environment wrote it, so nothing decides access, fences or ownership from it.
+ * Kept only on work the link itself stamped, cleaned by `cleanLinkedThreadSource`.
+ */
+export const OrchestrationV2LaunchedFrom = Schema.Struct({
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  title: Schema.String,
+});
+export type OrchestrationV2LaunchedFrom = typeof OrchestrationV2LaunchedFrom.Type;
+
+/** Longest title a linked environment's thread is shown with here. */
+export const LINKED_THREAD_TITLE_MAX_LENGTH = 120;
+/** Longest id a linked environment's thread reference may carry; longer ones are dropped. */
+const LINKED_THREAD_ID_MAX_LENGTH = 256;
+// Control characters, and the invisible ones that reorder or hide text: bidi overrides and
+// isolates, the zero-width space, direction marks, line and paragraph separators, the BOM. The
+// zero-width joiners stay: emoji and some scripts need them.
+const HIDDEN_TEXT = /[\p{Cc}\u200B\u200E\u200F\u2028-\u202E\u2060-\u2069\uFEFF]+/gu;
+// Ids go into `t3-thread://v2/<environment>/<thread>`: no spaces, slashes or URL syntax.
+const LINKED_THREAD_ID = /^[\w.:~@+=-]+$/;
+
+/** A linked environment's thread title as shown here: one line, visible characters, bounded. */
+export const cleanLinkedThreadTitle = (title: string): string => {
+  const flat = title.replace(HIDDEN_TEXT, " ").replace(/\s+/g, " ").trim();
+  const characters = Array.from(flat);
+  return characters.length <= LINKED_THREAD_TITLE_MAX_LENGTH
+    ? flat
+    : `${characters
+        .slice(0, LINKED_THREAD_TITLE_MAX_LENGTH - 1)
+        .join("")
+        .trimEnd()}\u2026`;
+};
+
+const isLinkedThreadId = (id: string) =>
+  id.length <= LINKED_THREAD_ID_MAX_LENGTH && LINKED_THREAD_ID.test(id);
+
+/**
+ * What this environment keeps of another's thread reference: ids a thread link can carry as
+ * they are, and a cleaned title. Undefined when an id could not go into a link safely.
+ */
+export const cleanLinkedThreadSource = (
+  source: OrchestrationV2LaunchedFrom,
+): OrchestrationV2LaunchedFrom | undefined =>
+  isLinkedThreadId(source.environmentId) && isLinkedThreadId(source.threadId)
+    ? {
+        environmentId: source.environmentId,
+        threadId: source.threadId,
+        title: cleanLinkedThreadTitle(source.title),
+      }
+    : undefined;
+
 export const OrchestrationV2NativeRefStrength = Schema.Literals(["strong", "weak", "none"]);
 export type OrchestrationV2NativeRefStrength = typeof OrchestrationV2NativeRefStrength.Type;
 
@@ -491,6 +544,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
   linkFenceRelease: Schema.optional(Schema.NullOr(OrchestrationV2LinkFenceRelease)),
   delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+  launchedFrom: Schema.optional(OrchestrationV2LaunchedFrom),
   lineage: OrchestrationV2AppThreadLineage,
   forkedFrom: Schema.NullOr(
     Schema.Union([
@@ -2145,6 +2199,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
   linkFenceRelease: Schema.optional(Schema.NullOr(OrchestrationV2LinkFenceRelease)),
   delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+  launchedFrom: Schema.optional(OrchestrationV2LaunchedFrom),
   latestRunId: Schema.NullOr(RunId),
   latestRunRequestedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   latestRunStartedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -2985,6 +3040,8 @@ export const OrchestrationV2Command = Schema.Union([
     linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
     /** Only the server sets this, with `linkOrigin`, for a linked environment's delegated task. */
     delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+    /** Only the server sets this, with `linkOrigin`, for a thread a linked environment launched. */
+    launchedFrom: Schema.optional(OrchestrationV2LaunchedFrom),
     importedNativeThread: Schema.optional(
       Schema.Struct({
         ref: Schema.Struct({
