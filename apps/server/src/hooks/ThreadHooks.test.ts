@@ -12,6 +12,7 @@ import {
   type OrchestrationV2StoredEvent,
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -330,9 +331,7 @@ it.live("run in order with the event on stdin, and a failing hook stops nothing"
     const config = yield* ServerConfig.ServerConfig;
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const hooks = yield* ThreadHooks.ThreadHooks;
-    const out = path.join(yield* fs.makeTempDirectoryScoped(), "events.jsonl");
-    process.env.T3_HOOK_TEST_OUT = out;
-    yield* Effect.addFinalizer(() => Effect.sync(() => delete process.env.T3_HOOK_TEST_OUT));
+    const out = (yield* HostProcess.Environment).T3_HOOK_TEST_OUT!;
     const router = yield* createThread(ThreadId.make("thread:router-live"));
     const run = (dispatched: Orchestrator.OrchestratorV2DispatchResult) =>
       Effect.forEach(stored(dispatched), hooks.handle, { discard: true });
@@ -370,7 +369,21 @@ it.live("run in order with the event on stdin, and a failing hook stops nothing"
           { events: ["thread.settled"], command: "exit 3" },
           { events: ["thread.settled"], command: "sleep 5", timeoutMs: 100 },
         ],
-      }),
+      }).pipe(
+        Layer.provideMerge(
+          Layer.effect(
+            HostProcess.Environment,
+            Effect.gen(function* () {
+              const fs = yield* FileSystem.FileSystem;
+              const path = yield* Path.Path;
+              return {
+                ...(yield* HostProcess.Environment),
+                T3_HOOK_TEST_OUT: path.join(yield* fs.makeTempDirectoryScoped(), "events.jsonl"),
+              };
+            }),
+          ).pipe(Layer.provide(NodeServices.layer)),
+        ),
+      ),
     ),
   ),
 );
