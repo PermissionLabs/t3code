@@ -1,16 +1,20 @@
+import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useEnvironment } from "~/state/environments";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 export function ThreadEnvironmentBadge({ environmentId }: { environmentId: EnvironmentId }) {
   const environment = useEnvironment(environmentId);
-  const label = environment?.label || environmentId;
-  const description = `Runs on ${label} · ${environment?.connection.phase ?? "unknown"}`;
+  const label = environment?.label || "Unknown machine";
+  const status = environment ? connectionStatusTitle(environment.connection) : "Connection unknown";
+  const description = `Runs on ${label} · ${status}`;
   return (
     <Tooltip>
       <TooltipTrigger
         render={
           <span
+            role="img"
+            tabIndex={0}
             aria-label={description}
             className="inline-flex max-w-24 shrink-0 items-center rounded border border-border px-1 text-3xs font-normal text-muted-foreground"
           />
