@@ -1,3 +1,4 @@
+import { ThreadEnvironmentBadge } from "../ThreadEnvironmentBadge";
 import { useAtomMount } from "@effect/atom-react";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { ThreadTerminalStatusButton } from "../ThreadStatusIndicators";
@@ -1223,7 +1224,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 tabIndex={0}
                 data-sidebar-row={threadKey}
                 data-sidebar-parent={props.navigationParent}
-                aria-label={accessibility.label}
+                aria-label={`${accessibility.label}, Runs on ${props.environmentLabel || "Unknown machine"}`}
                 aria-current={accessibility.current}
                 data-testid={inFolder ? "sidebar-row-folder" : "sidebar-row-slim"}
                 aria-busy={isRegeneratingTitle || undefined}
@@ -1260,6 +1261,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               )}
               {draftIndicator}
               {title}
+              <ThreadEnvironmentBadge environmentId={thread.environmentId} />
               {multiline ? titleLineIcons : null}
               {pinIndicator}
               {multiline ? null : terminalStatusIcon}
@@ -1419,7 +1421,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               tabIndex={0}
               data-sidebar-row={threadKey}
               data-sidebar-parent={props.navigationParent}
-              aria-label={accessibility.label}
+              aria-label={`${accessibility.label}, Runs on ${props.environmentLabel || "Unknown machine"}`}
               aria-current={accessibility.current}
               data-testid="sidebar-row-card"
               aria-busy={isRegeneratingTitle || undefined}
@@ -1585,6 +1587,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             </div>
             <div className="mt-1 flex min-w-0 items-center gap-1.5">
               {title}
+              <ThreadEnvironmentBadge environmentId={thread.environmentId} />
               {isRegeneratingTitle ? (
                 <span role="status" className="sr-only">
                   Regenerating title
@@ -1722,7 +1725,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
               aria-selected={props.isHighlighted}
               aria-current={accessibility.current}
               aria-describedby={`${props.resultId}-pr`}
-              aria-label={accessibility.label}
+              aria-label={`${accessibility.label}, Runs on ${props.environmentLabel || "Unknown machine"}`}
               {...dragListeners}
               onMouseMove={props.onHighlight}
               onClick={props.onSelect}
@@ -1763,6 +1766,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
               >
                 {thread.title}
               </span>
+              <ThreadEnvironmentBadge environmentId={thread.environmentId} />
               <span id={`${props.resultId}-pr`} className="contents">
                 <ThreadSearchPullRequestNumber
                   thread={thread}

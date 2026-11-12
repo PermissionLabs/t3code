@@ -1,3 +1,4 @@
+import { ThreadEnvironmentBadge } from "../ThreadEnvironmentBadge";
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
@@ -288,7 +289,7 @@ export const ChatHeader = memo(function ChatHeader({
       ref={breadcrumbContainerRef}
       className={cn(
         "flex min-w-0 flex-1 items-center gap-2 sm:gap-3",
-        rightPanelOpen ? "pr-10" : "pr-24",
+        rightPanelOpen ? "pr-12 sm:pr-10" : "pr-28 sm:pr-24",
       )}
       onContextMenu={handleHeaderContextMenu}
     >
@@ -357,7 +358,7 @@ export const ChatHeader = memo(function ChatHeader({
             </WorkspaceBreadcrumbSeparator>
           </>
         ) : null}
-        <WorkspaceBreadcrumbItem current className="min-w-10 flex-1">
+        <WorkspaceBreadcrumbItem current className="min-w-10 flex-1 gap-1.5">
           {renamingTitle !== null ? (
             <input
               autoFocus
@@ -412,7 +413,7 @@ export const ChatHeader = memo(function ChatHeader({
                 render={
                   <h2
                     aria-label={activeThreadTitle}
-                    className="min-w-0 flex-1"
+                    className="min-w-0"
                     dir={textDirection(activeThreadTitle)}
                   />
                 }
@@ -422,6 +423,7 @@ export const ChatHeader = memo(function ChatHeader({
               <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
             </Tooltip>
           )}
+          <ThreadEnvironmentBadge environmentId={activeThreadEnvironmentId} focusable />
           {renamingTitle === null && activeThreadLinkOrigin ? (
             <LinkOriginBadge
               origin={activeThreadLinkOrigin}
