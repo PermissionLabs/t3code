@@ -1,3 +1,4 @@
+import { ThreadEnvironmentBadge } from "../ThreadEnvironmentBadge";
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
@@ -357,7 +358,7 @@ export const ChatHeader = memo(function ChatHeader({
             </WorkspaceBreadcrumbSeparator>
           </>
         ) : null}
-        <WorkspaceBreadcrumbItem current className="min-w-10 flex-1">
+        <WorkspaceBreadcrumbItem current className="min-w-10 flex-1 gap-1.5">
           {renamingTitle !== null ? (
             <input
               autoFocus
@@ -422,6 +423,7 @@ export const ChatHeader = memo(function ChatHeader({
               <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
             </Tooltip>
           )}
+          <ThreadEnvironmentBadge environmentId={activeThreadEnvironmentId} />
           {renamingTitle === null && activeThreadLinkOrigin ? (
             <LinkOriginBadge
               origin={activeThreadLinkOrigin}
