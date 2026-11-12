@@ -423,7 +423,7 @@ export const ChatHeader = memo(function ChatHeader({
               <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
             </Tooltip>
           )}
-          <ThreadEnvironmentBadge environmentId={activeThreadEnvironmentId} />
+          <ThreadEnvironmentBadge environmentId={activeThreadEnvironmentId} focusable />
           {renamingTitle === null && activeThreadLinkOrigin ? (
             <LinkOriginBadge
               origin={activeThreadLinkOrigin}
