@@ -244,7 +244,8 @@ export default defineConfig({
       "react/refs": "error",
       "react/exhaustive-effect-dependencies": "error",
       "react/set-state-in-effect": "error",
-      "react/immutability": "error",
+      // oxlint 1.91 (vite-plus 1.5.x) flags effect-cleanup flags like `cancelled = true`; restore "error" once fixed upstream.
+      "react/immutability": "warn",
       "react/no-array-index-key": "error",
       "react/no-unstable-nested-components": "error",
       "react/static-components": "error",
@@ -572,7 +573,7 @@ export default defineConfig({
           "react/exhaustive-effect-dependencies": "error",
           "react/globals": "error",
           "react/hooks": "error",
-          "react/immutability": "error",
+          "react/immutability": "warn",
           // The compiler memoizes context values; this rule would ask for useMemo.
           "react/jsx-no-constructed-context-values": "off",
           "react/memo-dependencies": "error",
