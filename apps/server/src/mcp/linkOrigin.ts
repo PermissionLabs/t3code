@@ -27,9 +27,7 @@ export const callerLinkOrigin = (
   (caller.caller?.linkFenceRelease == null ? caller.caller?.linkOrigin : undefined) ??
   linkedClientOrigin(caller);
 
-const linkedClientOrigin = (
-  caller: Pick<Caller, "scope">,
-): OrchestrationV2LinkOrigin | undefined =>
+const linkedClientOrigin = (caller: Pick<Caller, "scope">): OrchestrationV2LinkOrigin | undefined =>
   caller.scope.client?.linked === true
     ? {
         sessionId: caller.scope.client.sessionId,

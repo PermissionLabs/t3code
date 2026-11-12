@@ -45,7 +45,7 @@ vp() {
     ./node_modules/.bin/vp "$@"
   else
     command -v bunx >/dev/null || fail 'Install Bun, then run this command again.'
-    bunx --package vite-plus@1.4.0 vp "$@"
+    bunx --package vite-plus@1.5.1 vp "$@"
   fi
 }
 build() {
