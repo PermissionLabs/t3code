@@ -82,6 +82,65 @@ describe("mergeProviderInstanceEnvironment", () => {
     }),
   );
 
+  it.effect("unsets inherited names and prefixes so a merging spawn still drops them", () =>
+    Effect.gen(function* () {
+      const baseEnv = {
+        SSH_AUTH_SOCK: "/agent.sock",
+        OP_SESSION_x: "session",
+        OP_ACCOUNT: "acct",
+        OPENAI_API_KEY: "kept",
+        PATH: "/bin",
+      };
+      const environment = yield* mergeProviderInstanceEnvironment(
+        [
+          { name: "GIT_ASKPASS", value: "", sensitive: false, unset: "exact" },
+          { name: "SSH_AUTH_SOCK", value: "", sensitive: false, unset: "exact" },
+          { name: "OP_", value: "", sensitive: false, unset: "prefix" },
+          // A later value wins over an earlier unset.
+          { name: "OP_ACCOUNT", value: "agent", sensitive: false },
+        ],
+        baseEnv,
+      );
+
+      expect(environment).toEqual({
+        GIT_ASKPASS: undefined,
+        SSH_AUTH_SOCK: undefined,
+        OP_SESSION_x: undefined,
+        OP_ACCOUNT: "agent",
+        OPENAI_API_KEY: "kept",
+        PATH: "/bin",
+      });
+      // The names stay as keys: `extendEnv: true` deletes a key whose value is undefined.
+      expect(Object.keys(environment)).toContain("SSH_AUTH_SOCK");
+      expect(baseEnv.SSH_AUTH_SOCK).toBe("/agent.sock");
+      // An earlier value loses to a later unset.
+      expect(
+        yield* mergeProviderInstanceEnvironment(
+          [
+            { name: "GIT_SSH_COMMAND", value: "ssh -i key", sensitive: false },
+            { name: "GIT_SSH_COMMAND", value: "", sensitive: false, unset: "exact" },
+          ],
+          {},
+        ),
+      ).toEqual({ GIT_SSH_COMMAND: undefined });
+      // Windows matches every spelling and keeps it, since a merge deletes by exact key.
+      expect(
+        yield* mergeProviderInstanceEnvironment(
+          [
+            { name: "SSH_AUTH_SOCK", value: "", sensitive: false, unset: "exact" },
+            { name: "op_", value: "", sensitive: false, unset: "prefix" },
+          ],
+          { Ssh_Auth_Sock: "/agent.sock", Op_Token: "t", PATH: "/bin" },
+        ).pipe(Effect.provideService(HostProcess.Platform, "win32")),
+      ).toEqual({
+        Ssh_Auth_Sock: undefined,
+        SSH_AUTH_SOCK: undefined,
+        Op_Token: undefined,
+        PATH: "/bin",
+      });
+    }),
+  );
+
   it.effect("replaces every inherited spelling of a name on Windows, and only there", () =>
     Effect.gen(function* () {
       const merge = (platform: NodeJS.Platform) =>

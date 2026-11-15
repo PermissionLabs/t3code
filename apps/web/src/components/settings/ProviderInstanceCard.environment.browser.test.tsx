@@ -54,6 +54,36 @@ describe("ProviderEnvironmentSection saved secrets", () => {
   });
 });
 
+describe("ProviderEnvironmentSection unset rows", () => {
+  it("cycles a row through unset, prefix unset, and back to a value", async () => {
+    const onChange = vi.fn();
+    await using screen = await render(
+      <ProviderEnvironmentSection
+        environment={[{ name: "SSH_AUTH_SOCK", value: "", sensitive: false, unset: "exact" }]}
+        onChange={onChange}
+      />,
+    );
+    const toggle = screen.getByRole("button", {
+      name: "Unset environment variable SSH_AUTH_SOCK",
+    });
+
+    await expect.element(toggle).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(toggle);
+    expect(onChange).toHaveBeenLastCalledWith([
+      { name: "SSH_AUTH_SOCK", value: "", sensitive: false, unset: "prefix" },
+    ]);
+    await userEvent.click(toggle);
+    expect(onChange).toHaveBeenLastCalledWith([
+      { name: "SSH_AUTH_SOCK", value: "", sensitive: false },
+    ]);
+    await expect.element(screen.getByLabelText("Environment variable value 1")).toBeEnabled();
+    await userEvent.click(toggle);
+    expect(onChange).toHaveBeenLastCalledWith([
+      { name: "SSH_AUTH_SOCK", value: "", sensitive: false, unset: "exact" },
+    ]);
+  });
+});
+
 describe("ProviderEnvironmentSection external settings writes", () => {
   it("keeps a typed unpublished row when an external write redelivers the environment", async () => {
     const onChange = vi.fn();

@@ -1438,10 +1438,10 @@ export const make = Effect.gen(function* () {
       const seenHomes = new Set<string>();
       for (const { instanceId, config: instance } of instances) {
         const environmentHome = (name: "CLAUDE_CONFIG_DIR" | "CODEX_HOME") => {
-          const configured = instance.environment?.findLast(
-            (variable) => variable.name === name,
-          )?.value;
-          return typeof configured === "string" ? configured : hostEnvironment[name];
+          const configured = instance.environment?.findLast((variable) => variable.name === name);
+          // An unset row removes the inherited home, so the default applies.
+          if (configured?.unset !== undefined) return undefined;
+          return typeof configured?.value === "string" ? configured.value : hostEnvironment[name];
         };
 
         let homePath: string;

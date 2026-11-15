@@ -216,6 +216,22 @@ describe("ServerSettings secret providers", () => {
       { name: "BASE_URL", value: "https://example.test", sensitive: false },
     ]);
 
+    // An unset entry keeps an empty value older builds read as an empty assignment, and never
+    // carries a secret reference.
+    const unset = decodeProviderInstanceEnvironment([
+      { name: "SSH_AUTH_SOCK", unset: "exact" },
+      { name: "OP_", value: "", sensitive: true, unset: "prefix", secret },
+    ]);
+    expect(unset).toEqual([
+      { name: "SSH_AUTH_SOCK", value: "", sensitive: false, unset: "exact" },
+      { name: "OP_", value: "", sensitive: true, unset: "prefix" },
+    ]);
+    expect(decodeStringOnlyEnvironment(encodeProviderInstanceEnvironment(unset))).toEqual([
+      { name: "SSH_AUTH_SOCK", value: "", sensitive: false },
+      { name: "OP_", value: "", sensitive: true },
+    ]);
+    expect(() => decodeProviderInstanceEnvironment([{ name: "OP_*", unset: "prefix" }])).toThrow();
+
     for (const invalid of [
       { provider: "My Vault", reference: "op://a/b/c" },
       { provider: "personal", reference: " " },

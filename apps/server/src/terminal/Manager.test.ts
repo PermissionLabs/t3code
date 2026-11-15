@@ -1922,12 +1922,13 @@ it.layer(
     Effect.gen(function* () {
       const providerInstanceId = ProviderInstanceId.make("codex_work");
       const { manager, ptyAdapter } = yield* createManager(5, {
-        env: { T3CODE_SECRET: "server-only" },
+        env: { T3CODE_SECRET: "server-only", SSH_AUTH_SOCK: "/agent.sock", PATH: "/bin" },
         resolveProviderInstanceEnvironment: (requestedId, env) =>
           Effect.succeed({
             ...env,
             PROVIDER_SECRET: requestedId === providerInstanceId ? "secret-value" : "wrong",
             CODEX_HOME: "/accounts/codex-work",
+            SSH_AUTH_SOCK: null,
           }),
       });
 
@@ -1939,6 +1940,9 @@ it.layer(
       expect(ptyAdapter.spawnInputs[0]?.env.CODEX_HOME).toBe("/accounts/codex-work");
       expect(ptyAdapter.spawnInputs[0]?.env.CLIENT_FLAG).toBe("1");
       expect(ptyAdapter.spawnInputs[0]?.env.T3CODE_SECRET).toBeUndefined();
+      // null removes the variable the terminal would otherwise inherit.
+      expect(ptyAdapter.spawnInputs[0]?.env).not.toHaveProperty("SSH_AUTH_SOCK");
+      expect(ptyAdapter.spawnInputs[0]?.env.PATH).toBe("/bin");
       expect(snapshot).not.toHaveProperty("env");
       expect(snapshot).not.toHaveProperty("providerInstanceId");
     }),
@@ -2008,6 +2012,41 @@ it.layer(
               driver: ProviderDriverKind.make(driver),
               environment: [{ name: variable, value: "~/.environment-account", sensitive: false }],
               config,
+            },
+          },
+        }),
+      ),
+    ),
+  );
+
+  it.effect("resolves a provider instance's unset entries to null", () =>
+    Effect.gen(function* () {
+      const environment = yield* TerminalManager.resolveProviderInstanceTerminalEnvironment({
+        serverSettings: yield* ServerSettings.ServerSettingsService,
+        path: yield* Path.Path,
+        rawProviderInstanceId: "agent_profile",
+        env: { SSH_AUTH_SOCK: "/client.sock", CLIENT_FLAG: "1" },
+        hostEnv: { OP_SESSION_x: "session", OP_ACCOUNT: "acct", OPENAI_API_KEY: "kept" },
+      });
+
+      expect(environment).toEqual({
+        SSH_AUTH_SOCK: null,
+        CLIENT_FLAG: "1",
+        OP_SESSION_x: null,
+        OP_ACCOUNT: null,
+        GIT_CONFIG_GLOBAL: "/profiles/agent.gitconfig",
+      });
+    }).pipe(
+      Effect.provide(
+        ServerSettings.layerTest({
+          providerInstances: {
+            [ProviderInstanceId.make("agent_profile")]: {
+              driver: ProviderDriverKind.make("opencode"),
+              environment: [
+                { name: "SSH_AUTH_SOCK", value: "", sensitive: false, unset: "exact" },
+                { name: "OP_", value: "", sensitive: false, unset: "prefix" },
+                { name: "GIT_CONFIG_GLOBAL", value: "/profiles/agent.gitconfig", sensitive: false },
+              ],
             },
           },
         }),
