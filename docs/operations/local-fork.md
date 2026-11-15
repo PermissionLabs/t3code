@@ -62,4 +62,4 @@ If a completed update is unsuitable, inspect the recovery branch named in `.git/
   ]
   ```
 
-  Rows apply in order, so a later row wins over an earlier one. A policy-locked variable still wins over an unset row. Builds without this change read an unset row as an empty value: an exact row then gives an empty variable, but a prefix row removes nothing, and saving settings from such a build drops the `unset` key.
+  Rows apply in order, so a later row wins over an earlier one. Name each credential variable in an exact row: a prefix row matches the names present when the provider starts, so a variable the desktop shell probe adds later can still reach a probe that merges the server environment back in. A policy-locked variable still wins over an unset row, and a policy with `maxRuntimeMode` drops the instance's own rows, unset rows included. Builds without this change read an unset row as an empty value: an exact row then gives an empty variable, but a prefix row removes nothing, and saving settings from such a build drops the `unset` key.

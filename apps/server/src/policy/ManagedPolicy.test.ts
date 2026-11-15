@@ -269,6 +269,35 @@ it.layer(NodeServices.layer)("ManagedPolicy.load", (it) => {
             ? (saved.settings.providerInstances[codexId]?.environment ?? [])
             : [];
         assert.isTrue(savedEnvironment.some((entry) => entry.name === "T3CODE_CODEX_LAUNCH_ARGS"));
+        // Changing how a row named like a policy default unsets is the user's edit, not an echo.
+        const fill = yield* ManagedPolicy.fromDocument("/test/policy.json", {
+          schemaVersion: 1,
+          organization: "Example Corp",
+          limits: {
+            providers: {
+              instances: { [codex]: { locked: false, environment: [{ name: "OP_", value: "" }] } },
+            },
+          },
+        }).pipe(Effect.provideService(HostProcess.Platform, "linux"));
+        const withRow = (row: object) => ({
+          ...settings,
+          providerInstances: {
+            [codexId]: { driver: codex, environment: [{ ...variable("OP_", ""), ...row }] },
+          },
+        });
+        for (const [before, after] of [
+          [{ unset: "exact" }, { unset: "prefix" }],
+          [{}, { unset: "exact" }],
+        ] as const) {
+          const edited = fill.providers.vetWrite(withRow(before), withRow(after));
+          assert.equal(edited._tag, "Allowed");
+          assert.deepEqual(
+            edited._tag === "Allowed"
+              ? edited.settings.providerInstances[codexId]?.environment
+              : undefined,
+            [{ ...variable("OP_", ""), ...after }],
+          );
+        }
         // A home path setting would rewrite a locked home variable at launch, so the lock owns it.
         const claude = ProviderDriverKind.make("claudeAgent");
         const homeLocked = yield* ManagedPolicy.fromDocument("/test/policy.json", {

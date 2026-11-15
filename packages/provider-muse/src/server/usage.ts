@@ -126,8 +126,11 @@ export const museUsageReader: ProviderUsageReader<
     const home = yield* HostProcess.HomeDirectory;
     const usageHome = yield* MuseUsageHome.MuseUsageHome;
     const processEnvironment = yield* mergeProviderInstanceEnvironment(
-      Object.entries(environment).flatMap(([name, value]) =>
-        value === undefined ? [] : [{ name, value, sensitive: false }],
+      // A name the instance unsets arrives as undefined and must stay removed from the host's.
+      Object.entries(environment).map(([name, value]) =>
+        value === undefined
+          ? { name, value: "", sensitive: false, unset: "exact" as const }
+          : { name, value, sensitive: false },
       ),
       yield* HostProcess.Environment,
     );
