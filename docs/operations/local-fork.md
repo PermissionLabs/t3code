@@ -49,3 +49,17 @@ If a merge conflicts, resolve it and commit, then run `./apps/desktop/scripts/lo
 If a completed update is unsuitable, inspect the recovery branch named in `.git/local-fork-backup`. Preserve any new edits and ask an agent to recover onto a new branch; do not blindly reset the shared custom branch. Code rollback and database rollback are separate: an older build may not understand a migrated database. Restore the matching data archive only with the app stopped, after preserving the current data. Backups may contain secrets and stay local; review disk usage and remove old backups when no longer needed.
 
 `./apps/desktop/scripts/local-fork.sh status` reports the checkout, last built commit, and the stable release it is based on. Future modifications should stay on small branches based on `custom/local` and merge back after verification. Keep changes narrowly scoped to reduce upstream conflicts. If the official product eventually covers the same need, remove the redundant local patch.
+
+## Fork-only changes
+
+- **Unset entries in provider environment variables.** A provider instance's environment row can carry `"unset": "exact"` or `"unset": "prefix"` to remove inherited variables instead of setting one, so a machine can keep human credential paths (`SSH_AUTH_SOCK`, `GIT_ASKPASS`, `OP_*`, …) away from agents without changing the server's own environment or T3 Code's own git. In `settings.json`, a Claude instance looks like this:
+
+  ```json
+  "environment": [
+    { "name": "SSH_AUTH_SOCK", "unset": "exact" },
+    { "name": "OP_", "unset": "prefix" },
+    { "name": "GIT_CONFIG_GLOBAL", "value": "/path/to/agent.gitconfig" }
+  ]
+  ```
+
+  Builds without this change read an unset row as an empty value.

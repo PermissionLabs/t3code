@@ -8,6 +8,7 @@ import {
   DownloadIcon,
   ExternalLinkIcon,
   LayersIcon,
+  EraserIcon,
   PlusIcon,
   Trash2Icon,
   XIcon,
@@ -107,7 +108,15 @@ type EnvironmentDraftRow = {
   readonly value: ProviderInstanceEnvironmentVariable["value"];
   readonly sensitive: boolean;
   readonly valueRedacted?: boolean;
+  readonly unset?: NonNullable<ProviderInstanceEnvironmentVariable["unset"]>;
 };
+
+// Each press moves a row to the next mode: set a value, unset the name, unset the name as a prefix.
+const NEXT_UNSET_MODE = {
+  none: "exact",
+  exact: "prefix",
+  prefix: undefined,
+} as const satisfies Record<string, ProviderInstanceEnvironmentVariable["unset"]>;
 
 function makeEnvironmentDraftRow(
   variable: ProviderInstanceEnvironmentVariable,
@@ -119,6 +128,7 @@ function makeEnvironmentDraftRow(
     value: variable.value,
     sensitive: variable.sensitive,
     ...(variable.valueRedacted !== undefined ? { valueRedacted: variable.valueRedacted } : {}),
+    ...(variable.unset !== undefined ? { unset: variable.unset } : {}),
   };
 }
 
@@ -146,7 +156,8 @@ function providerEnvironmentsEqual(
         variable.name === other.name &&
         environmentValuesEqual(variable.value, other.value) &&
         variable.sensitive === other.sensitive &&
-        variable.valueRedacted === other.valueRedacted
+        variable.valueRedacted === other.valueRedacted &&
+        variable.unset === other.unset
       );
     })
   );
@@ -379,7 +390,8 @@ export function ProviderEnvironmentSection(props: {
           name.length > 0 ||
           row.value !== "" ||
           row.sensitive !== true ||
-          row.valueRedacted !== undefined
+          row.valueRedacted !== undefined ||
+          row.unset !== undefined
         ) {
           return;
         }
@@ -413,6 +425,18 @@ export function ProviderEnvironmentSection(props: {
       if (row.id !== id) return row;
       const { valueRedacted: _valueRedacted, ...rest } = row;
       return { ...rest, value: secret ?? "" };
+    });
+    setRows(nextRows);
+    publishRows(nextRows);
+  };
+
+  const cycleUnset = (row: EnvironmentDraftRow) => {
+    const unset = NEXT_UNSET_MODE[row.unset ?? "none"];
+    const nextRows = rows.map((candidate) => {
+      if (candidate.id !== row.id) return candidate;
+      const { valueRedacted: _valueRedacted, unset: _unset, ...rest } = candidate;
+      // An unset row carries no value; leaving unset starts from an empty plain value.
+      return { ...rest, value: "", sensitive: false, ...(unset === undefined ? {} : { unset }) };
     });
     setRows(nextRows);
     publishRows(nextRows);
@@ -517,6 +541,33 @@ export function ProviderEnvironmentSection(props: {
                   </TooltipPopup>
                 </Tooltip>
               ) : null;
+            const unsetLabel = `Unset environment variable ${variable.name || index + 1}`;
+            const unsetToggle = (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      size="icon-micro"
+                      variant="ghost-muted"
+                      disabled={variable.valueRedacted === true}
+                      onClick={() => cycleUnset(variable)}
+                      aria-pressed={variable.unset !== undefined}
+                      aria-label={unsetLabel}
+                    >
+                      <EraserIcon className="size-3" />
+                    </Button>
+                  }
+                />
+                <TooltipPopup side="top">
+                  {variable.unset === undefined
+                    ? "Set a value. Press to remove the inherited variable instead"
+                    : variable.unset === "exact"
+                      ? "Removes the inherited variable. Press to remove every name with this prefix"
+                      : "Removes every inherited variable with this prefix. Press to set a value"}
+                </TooltipPopup>
+              </Tooltip>
+            );
             const layout = (source: ReactNode, value: ReactNode) => (
               <div className="flex min-w-0 flex-col gap-1.5 rounded-lg border p-2">
                 <div className="flex min-w-0 items-center gap-1.5">
@@ -526,10 +577,25 @@ export function ProviderEnvironmentSection(props: {
                 </div>
                 <div className="flex min-w-0 items-start gap-1.5">
                   {value}
-                  {sensitiveToggle}
+                  {variable.unset === undefined ? sensitiveToggle : null}
+                  {unsetToggle}
                 </div>
               </div>
             );
+            if (variable.unset !== undefined) {
+              return (
+                <Fragment key={variable.id}>
+                  {layout(
+                    null,
+                    <p className="min-w-0 flex-1 py-1 text-xs text-muted-foreground">
+                      {variable.unset === "exact"
+                        ? "Removed from the environment this provider inherits."
+                        : `Every inherited variable starting with ${variable.name || "this prefix"} is removed.`}
+                    </p>,
+                  )}
+                </Fragment>
+              );
+            }
             return (
               <Fragment key={variable.id}>
                 {variable.sensitive ? (
