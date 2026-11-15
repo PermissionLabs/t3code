@@ -715,6 +715,38 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
       }),
     );
 
+    it.effect("drops a home an instance's later prefix unset removes", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+        const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+        const removedHome = yield* makeTempDir("t3code-codex-removed-home-");
+        const workspace = yield* makeTempDir("t3code-workspace-removed-home-");
+        yield* writeTranscript({
+          filePath: path.join(removedHome, "sessions", "2026", "08", "24", "rollout-removed.jsonl"),
+          contents: codexRolloutLine(workspace),
+          mtimeMs: Date.parse("2026-08-24T12:00:00.000Z"),
+        });
+
+        const result = yield* runScan({
+          claudeHomePath,
+          codexHomePath,
+          providerInstances: {
+            [ProviderInstanceId.make("codex-agent")]: {
+              driver: ProviderDriverKind.make("codex"),
+              environment: [
+                { name: "CODEX_HOME", value: removedHome, sensitive: false },
+                { name: "CODEX_", value: "", sensitive: false, unset: "prefix" },
+              ],
+              config: {},
+            },
+          },
+        });
+
+        expect(result.candidates.map((candidate) => candidate.path)).not.toContain(workspace);
+      }),
+    );
+
     it.effect("does not scan provider instances disabled by the envelope or config", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;

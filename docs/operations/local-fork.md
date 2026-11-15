@@ -62,4 +62,4 @@ If a completed update is unsuitable, inspect the recovery branch named in `.git/
   ]
   ```
 
-  Builds without this change read an unset row as an empty value.
+  Rows apply in order, so a later row wins over an earlier one. A policy-locked variable still wins over an unset row. Builds without this change read an unset row as an empty value: an exact row then gives an empty variable, but a prefix row removes nothing, and saving settings from such a build drops the `unset` key.

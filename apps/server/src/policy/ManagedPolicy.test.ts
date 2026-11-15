@@ -204,6 +204,7 @@ it.layer(NodeServices.layer)("ManagedPolicy.load", (it) => {
       Effect.gen(function* () {
         const codex = ProviderDriverKind.make("codex");
         const variable = (name: string, value: string) => ({ name, value, sensitive: false });
+        const unsetPrefix = { ...variable("HTTPS_", ""), unset: "prefix" as const };
         const settings = {
           ...DEFAULT_SERVER_SETTINGS,
           providerInstances: {
@@ -212,6 +213,8 @@ it.layer(NodeServices.layer)("ManagedPolicy.load", (it) => {
               environment: [
                 variable("HTTPS_PROXY", "http://mine"),
                 variable("T3CODE_CODEX_LAUNCH_ARGS", "--dangerously-bypass-approvals-and-sandbox"),
+                // A later prefix unset would remove the locked value if it came first.
+                unsetPrefix,
               ],
             },
           },
@@ -241,10 +244,12 @@ it.layer(NodeServices.layer)("ManagedPolicy.load", (it) => {
               ]?.environment,
           );
         assert.deepEqual(yield* environmentOn("win32"), [
+          unsetPrefix,
           variable("Https_Proxy", "http://gateway"),
         ]);
         assert.deepEqual(yield* environmentOn("linux"), [
           variable("HTTPS_PROXY", "http://mine"),
+          unsetPrefix,
           variable("Https_Proxy", "http://gateway"),
         ]);
         // Saving what the client was shown keeps the override it never saw.

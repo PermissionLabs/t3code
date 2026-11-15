@@ -118,10 +118,11 @@ export const makeCodexManagedRuntime = Effect.fn("makeCodexManagedRuntime")(func
       ...options.environment,
       CODEX_HOME: homePath,
     };
-    delete environment.ACCESS_TOKEN;
-    delete environment.T3CODE_CODEX_LAUNCH_ARGS;
-    delete environment.OPENAI_API_KEY;
-    delete environment.OPENAI_BASE_URL;
+    // Undefined rather than deleted: a spawn with `extendEnv: true` would merge the server's value back.
+    environment.ACCESS_TOKEN = undefined;
+    environment.T3CODE_CODEX_LAUNCH_ARGS = undefined;
+    environment.OPENAI_API_KEY = undefined;
+    environment.OPENAI_BASE_URL = undefined;
     return {
       config: decodeSettings({
         enabled: options.enabled,
