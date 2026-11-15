@@ -208,7 +208,12 @@ describe("Muse history discovery", () => {
           instanceId: ProviderInstanceId.make("muse-other"),
           configured: true,
           config: decodeSettings({ binaryPath: "~/bin/custom-muse" }),
-          environment: { XDG_DATA_HOME: xdg, MUSE_NO_AUTO_UPDATE: "0" },
+          // The instance's merged environment: undefined is a name the instance unsets.
+          environment: {
+            ...(xdg === undefined ? {} : { XDG_DATA_HOME: xdg }),
+            MUSE_NO_AUTO_UPDATE: "0",
+            SSH_AUTH_SOCK: undefined,
+          },
         });
         expect(directories).toEqual([
           { dir: path.join("/native/configured-home", "sessions"), fileName: "session.jsonl" },
@@ -223,6 +228,7 @@ describe("Muse history discovery", () => {
           readOnly: true,
           startupTimeoutMs: 5_000,
         });
+        expect(create.mock.calls[0]?.[0].environment?.SSH_AUTH_SOCK).toBeUndefined();
         expect(close).toHaveBeenCalledOnce();
       }).pipe(
         Effect.provide([NodeServices.layer, MuseUsageHome.layer]),
@@ -230,6 +236,7 @@ describe("Muse history discovery", () => {
         Effect.provideService(HostProcess.Environment, {
           PATH: "/host/bin",
           XDG_DATA_HOME: "/host/data",
+          SSH_AUTH_SOCK: "/host/agent.sock",
         }),
       ),
   );

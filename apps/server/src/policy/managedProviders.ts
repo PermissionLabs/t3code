@@ -208,6 +208,7 @@ const sameVariable = (
     right !== undefined &&
     // A secret reference is an object, and a decoded copy is never the stored one.
     sameValue(left.value, right.value) &&
+    left.unset === right.unset &&
     left.sensitive === right.sensitive);
 
 const pinnedFields = (pin: ManagedProviderInstance): ReadonlyArray<PinnedConfigField> =>
@@ -449,6 +450,7 @@ export function makeManagedProviders(
       (stored?.environment ?? []).some((existing) => sameVariable(variable, existing));
     const echoed = (variable: ProviderInstanceEnvironmentVariable) =>
       !variable.sensitive &&
+      variable.unset === undefined &&
       pinned.some((pin) => pin.name === variable.name && pin.value === variable.value);
     if (rule.environment === "all") {
       // Only the pinned variables were shown, so the user's own stay as stored.
