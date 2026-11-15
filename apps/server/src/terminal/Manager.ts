@@ -1381,18 +1381,17 @@ function createTerminalSpawnEnv(
     spawnEnv[key] = value;
   }
   if (runtimeEnv) {
+    // Removals first, so on Windows a value set under another spelling of the name survives.
     for (const [key, value] of Object.entries(runtimeEnv)) {
-      if (value === null) {
-        // A provider instance removes this inherited variable.
-        for (const candidate of Object.keys(spawnEnv)) {
-          const same =
-            platform === "win32"
-              ? candidate.toLowerCase() === key.toLowerCase()
-              : candidate === key;
-          if (same) delete spawnEnv[candidate];
-        }
-        continue;
+      if (value !== null) continue;
+      for (const candidate of Object.keys(spawnEnv)) {
+        const same =
+          platform === "win32" ? candidate.toLowerCase() === key.toLowerCase() : candidate === key;
+        if (same) delete spawnEnv[candidate];
       }
+    }
+    for (const [key, value] of Object.entries(runtimeEnv)) {
+      if (value === null) continue;
       const existingKey =
         platform === "win32"
           ? Object.keys(spawnEnv).find((candidate) => candidate.toLowerCase() === key.toLowerCase())

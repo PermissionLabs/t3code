@@ -139,6 +139,15 @@ it.live.each(
           assert.isUndefined(effective.environment.OPENAI_API_KEY);
           assert.isUndefined(effective.environment.OPENAI_BASE_URL);
           assert.isUndefined(effective.environment.T3CODE_CODEX_LAUNCH_ARGS);
+          // Kept as undefined so an `extendEnv: true` probe does not merge the server's value back.
+          for (const name of [
+            "ACCESS_TOKEN",
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            "T3CODE_CODEX_LAUNCH_ARGS",
+          ]) {
+            assert.property(effective.environment, name);
+          }
           const args = codexAppServerArgs(effective.config.launchArgs);
           assert.include(args, 'model_provider="openai_token_sharing"');
           const provider = args.find((arg) =>

@@ -270,6 +270,26 @@ const overlayInstance = (
     for (const pinned of pinnedEnvironment) {
       if (!seen.has(variableKey(pinned.name))) environment.push(pinned);
     }
+    // A later prefix unset entry would remove a locked value, so that value moves after it.
+    if (rule.environment === "locked") {
+      const removedLater = (index: number) =>
+        environment
+          .slice(index + 1)
+          .some(
+            (variable) =>
+              variable.unset === "prefix" &&
+              variableKey(environment[index]!.name).startsWith(variableKey(variable.name)),
+          );
+      const moved = environment.filter(
+        (variable, index) =>
+          pinnedByName.get(variableKey(variable.name)) === variable && removedLater(index),
+      );
+      if (moved.length > 0) {
+        const kept = environment.filter((variable) => !moved.includes(variable));
+        environment.length = 0;
+        environment.push(...kept, ...moved);
+      }
+    }
   }
   const { config: _config, environment: _environment, ...envelope } = instance;
   return {
