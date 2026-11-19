@@ -1,8 +1,8 @@
+import type { WatchDetail } from "../pullRequest/PermissionLabsWatchReader.ts";
 import type {
   OrchestrationV2Notification,
   PullRequestCheck,
   PullRequestComment,
-  PullRequestDetail,
   ThreadPullRequestWatch,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -34,7 +34,7 @@ const isFailedCheck = (check: PullRequestCheck) =>
 export function evaluatePullRequestWatch(
   watch: ThreadPullRequestWatch,
   detail: Pick<
-    PullRequestDetail,
+    WatchDetail,
     "capabilities" | "headSha" | "checks" | "mergeability" | "viewer" | "author"
   >,
   remarks: ReadonlyArray<PullRequestComment> | null,

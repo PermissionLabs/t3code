@@ -16,6 +16,7 @@ import {
 } from "../sourceControl/threadPullRequests.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
+import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
@@ -31,6 +32,7 @@ import {
   type ProviderChangeRequestWatchFingerprint,
   PullRequestProviderError,
 } from "@t3tools/source-control-core/server/PullRequestProvider";
+import * as PermissionLabsWatchReader from "../pullRequest/PermissionLabsWatchReader.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -44,6 +46,7 @@ import {
 /** Checks take minutes; faster sweeps waste the account's shared host quota. */
 const SWEEP_MINUTES = 2;
 const READ_FAILURE_LIMIT = 8;
+const TRANSIENT_RETRY_COOLDOWN_MS = 30 * 60_000;
 /** Group reads in flight at once, inside the host's own request limit. */
 const GROUP_READS = 4;
 /** Without fingerprints, reread quiet PRs on snapshot changes or this interval to catch edits. */
@@ -173,6 +176,7 @@ function planRead(
 function watchesEqual(left: ThreadPullRequestWatch, right: ThreadPullRequestWatch): boolean {
   return (
     left.startedAt === right.startedAt &&
+    left.readStatus === right.readStatus &&
     left.headSha === right.headSha &&
     left.failedChecks.join("\n") === right.failedChecks.join("\n") &&
     left.passed === right.passed &&
@@ -250,6 +254,7 @@ export const make = Effect.gen(function* () {
     Effect.suspend(() => reportEnd(lifeKey(target), lifeOf(target), reason));
 
   const readFailures = new Map<string, number>();
+  const transientRetries = new Map<string, { count: number; resumeAt: number }>();
   const lastReads = new Map<string, LastRead>();
   const threadTails = new Map<
     string,
@@ -438,25 +443,35 @@ export const make = Effect.gen(function* () {
       ),
     ).pipe(Effect.map((landed) => landed.every(Boolean)));
 
+  const readerExecutable = yield* Config.String("T3CODE_PERMISSIONLABS_WATCH_READER").pipe(
+    Effect.orElseSucceed(() => undefined),
+  );
+  const readerRepoOf = (group: WatchGroup) => {
+    const { host, repository } = identityOf(group.targets[0]!.link);
+    return PermissionLabsWatchReader.permissionLabsWatchRepo(host, repository);
+  };
+
   const referenceOf = (group: WatchGroup) => {
     const first = group.targets[0]!;
     return { projectId: first.thread.projectId, ...identityOf(first.link) };
   };
 
   const fingerprintOf = (group: WatchGroup) =>
-    pullRequests.watchFingerprint(referenceOf(group)).pipe(
-      Effect.catchCause(
-        (cause): Effect.Effect<ProviderChangeRequestWatchFingerprint | null | "paused"> =>
-          Cause.hasInterruptsOnly(cause)
-            ? Effect.interrupt
-            : providerFailureReason(cause) === "rate-limited"
-              ? Effect.succeed("paused")
-              : Effect.logDebug("pull request watch fingerprint failed", {
-                  pullRequest: group.key,
-                  cause,
-                }).pipe(Effect.as(null)),
-      ),
-    );
+    readerExecutable && readerRepoOf(group) !== undefined
+      ? Effect.succeed(null)
+      : pullRequests.watchFingerprint(referenceOf(group)).pipe(
+          Effect.catchCause(
+            (cause): Effect.Effect<ProviderChangeRequestWatchFingerprint | null | "paused"> =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.interrupt
+                : providerFailureReason(cause) === "rate-limited"
+                  ? Effect.succeed("paused")
+                  : Effect.logDebug("pull request watch fingerprint failed", {
+                      pullRequest: group.key,
+                      cause,
+                    }).pipe(Effect.as(null)),
+          ),
+        );
 
   const readGroup = Effect.fn("PullRequestWatchReactor.readGroup")(function* (
     group: WatchGroup,
@@ -477,31 +492,76 @@ export const make = Effect.gen(function* () {
     const reference = referenceOf(group);
     // Invalidate cached reads before using the newer fingerprint; clients receive no notification.
     if (fingerprint !== null) yield* pullRequests.invalidate({ reference });
-    const [detailRead, activityRead] = yield* Effect.all(
-      [
-        Effect.exit(pullRequests.detail({ ...reference, allowStale: false })),
-        Effect.exit(
-          plan.activity
-            ? pullRequests.activity(reference).pipe(Effect.asSome)
-            : Effect.succeed(Option.none<PullRequestActivity>()),
-        ),
-      ],
-      { concurrency: 2 },
-    );
-    // Activity failures must not cancel or hide a permanent detail failure.
-    const read = Exit.isFailure(detailRead)
-      ? Exit.failCause(detailRead.cause)
-      : Exit.isFailure(activityRead)
-        ? Exit.failCause(activityRead.cause)
-        : Exit.succeed([detailRead.value, activityRead.value] as const);
+    const readerRepo = readerRepoOf(group);
+    const readWatch: Effect.Effect<
+      { detail: PermissionLabsWatchReader.WatchDetail; activity: PullRequestActivity | null },
+      PullRequestService.PullRequestError
+    > =
+      readerExecutable && readerRepo !== undefined
+        ? PermissionLabsWatchReader.read(
+            readerExecutable,
+            readerRepo,
+            reference.number,
+            plan.activity,
+          )
+        : Effect.gen(function* () {
+            const [detailRead, activityRead] = yield* Effect.all(
+              [
+                Effect.exit(pullRequests.detail({ ...reference, allowStale: false })),
+                Effect.exit(
+                  plan.activity
+                    ? pullRequests.activity(reference).pipe(Effect.asSome)
+                    : Effect.succeed(Option.none<PullRequestActivity>()),
+                ),
+              ],
+              { concurrency: 2 },
+            );
+            // Activity failures must not cancel or hide a permanent detail failure.
+            return yield* Exit.isFailure(detailRead)
+              ? Exit.failCause(detailRead.cause)
+              : Exit.isFailure(activityRead)
+                ? Exit.failCause(activityRead.cause)
+                : Exit.succeed({
+                    detail: detailRead.value,
+                    activity: Option.getOrNull(activityRead.value),
+                  });
+          });
+    const read = yield* Effect.exit(readWatch);
     if (Exit.isFailure(read)) {
       if (Cause.hasInterruptsOnly(read.cause)) return yield* Effect.failCause(read.cause);
       lastReads.delete(group.key);
       const reason = providerFailureReason(read.cause);
+      if (reason !== "failed") transientRetries.delete(group.key);
+      if (reason === "unauthenticated") {
+        readFailures.delete(group.key);
+        yield* eachTarget(group, (target) =>
+          target.watch.readStatus === "auth-blocked"
+            ? Effect.void
+            : record(
+                target,
+                { ...target.watch, readStatus: "auth-blocked" },
+                {
+                  text: `T3 Code cannot read pull request #${target.link.number} because host authentication is unavailable. The watch remains registered and will resume after host access is restored.`,
+                  notification: {
+                    source: { kind: "monitor" },
+                    outcome: "failed",
+                    summary: `#${target.link.number}: watch blocked by host authentication`,
+                  },
+                },
+              ),
+        );
+        return;
+      }
       if (reason === "rate-limited") return;
-      // Transport and host failures can outlast the failure limit; keep the watch for recovery.
       if (reason === "failed") {
         readFailures.delete(group.key);
+        const count = (transientRetries.get(group.key)?.count ?? 0) + 1;
+        transientRetries.set(
+          group.key,
+          count >= READ_FAILURE_LIMIT
+            ? { count: 0, resumeAt: now + TRANSIENT_RETRY_COOLDOWN_MS }
+            : { count, resumeAt: now },
+        );
         return yield* Effect.failCause(read.cause);
       }
       const failures = (readFailures.get(group.key) ?? 0) + 1;
@@ -512,7 +572,8 @@ export const make = Effect.gen(function* () {
       return yield* Effect.failCause(read.cause);
     }
     readFailures.delete(group.key);
-    const [detail, activity] = read.value;
+    transientRetries.delete(group.key);
+    const { detail, activity } = read.value;
     for (const target of group.targets) {
       const life = lifeOf(target);
       const headSha = detail.headSha ?? life.headSha;
@@ -536,15 +597,16 @@ export const make = Effect.gen(function* () {
     }
 
     // Never advance the remark watermark past comments an incomplete read could have missed.
-    const remarks = Option.isSome(activity)
-      ? yield* readRemarks(
-          group.key,
-          reference,
-          activity.value,
-          now,
-          fingerprint === null ? QUIET_REREAD_MS : FINGERPRINT_REREAD_MS,
-        )
-      : null;
+    const remarks =
+      activity !== null
+        ? yield* readRemarks(
+            group.key,
+            reference,
+            activity,
+            now,
+            fingerprint === null ? QUIET_REREAD_MS : FINGERPRINT_REREAD_MS,
+          )
+        : null;
     lastReads.set(group.key, {
       at:
         plan.activity || last === undefined
@@ -560,7 +622,8 @@ export const make = Effect.gen(function* () {
       remarks: fingerprint?.remarks ?? null,
     });
     yield* eachTarget(group, (target) => {
-      const report = evaluatePullRequestWatch(target.watch, detail, remarks, now);
+      const evaluation = evaluatePullRequestWatch(target.watch, detail, remarks, now);
+      const report = { ...evaluation, next: { ...evaluation.next, readStatus: "ready" as const } };
       if (report.changes.length > 0) {
         const wake = pullRequestWatchMessage({
           number: target.link.number,
@@ -614,7 +677,7 @@ export const make = Effect.gen(function* () {
       targets: members,
       fingerprint: [...new Set(members.map(snapshotFingerprint))].toSorted().join("\n"),
     }));
-    for (const cache of [readFailures, lastReads, threadTails]) {
+    for (const cache of [readFailures, transientRetries, lastReads, threadTails]) {
       for (const key of cache.keys()) if (!byPullRequest.has(key)) cache.delete(key);
     }
     yield* Effect.forEach(
@@ -634,8 +697,9 @@ export const make = Effect.gen(function* () {
     // Every fingerprint is asked for at once so the host can batch them, and each group reads
     // as soon as its own answer lands rather than waiting on the slowest host.
     const reads = yield* Semaphore.make(GROUP_READS);
+    const now = yield* Clock.currentTimeMillis;
     yield* Effect.forEach(
-      groups,
+      groups.filter(({ key }) => (transientRetries.get(key)?.resumeAt ?? now) <= now),
       (group) =>
         fingerprintOf(group).pipe(
           Effect.flatMap((fingerprint) =>

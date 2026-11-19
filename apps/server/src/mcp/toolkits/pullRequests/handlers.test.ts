@@ -630,6 +630,7 @@ describe("pull request toolkit handlers", () => {
         url: "https://github.com/t3tools/t3code/pull/3",
         source: "agent",
         watching: false,
+        readStatus: null,
         state: "open",
         title: "PR 3",
         headBranch: "feat-c",

@@ -79,7 +79,10 @@ export const ThreadPullRequestKey = Schema.Struct({
 });
 export type ThreadPullRequestKey = typeof ThreadPullRequestKey.Type;
 
+export const PullRequestWatchReadStatus = Schema.Literals(["pending", "auth-blocked", "ready"]);
+
 export const ThreadPullRequestWatch = Schema.Struct({
+  readStatus: Schema.optional(PullRequestWatchReadStatus),
   startedAt: IsoDateTime,
   headSha: Schema.NullOr(TrimmedNonEmptyString),
   failedChecks: Schema.Array(TrimmedNonEmptyString),

@@ -6,6 +6,7 @@ import {
   PullRequestReviewGuide,
   PullRequestReviewGuideRun,
   PullRequestState,
+  PullRequestWatchReadStatus,
   ThreadPullRequestLinkSource,
   TrimmedNonEmptyString,
   ThreadId,
@@ -256,6 +257,7 @@ export const WatchPullRequestResult = Schema.Struct({
   ...PullRequestIdentity,
   watching: Schema.Boolean,
   wasWatching: Schema.Boolean,
+  readStatus: Schema.NullOr(PullRequestWatchReadStatus),
 });
 export type WatchPullRequestResult = typeof WatchPullRequestResult.Type;
 
@@ -263,6 +265,7 @@ export const ThreadPullRequestEntry = Schema.Struct({
   ...PullRequestIdentity,
   source: ThreadPullRequestLinkSource,
   watching: Schema.Boolean,
+  readStatus: Schema.NullOr(PullRequestWatchReadStatus),
   state: Schema.NullOr(PullRequestState),
   title: Schema.NullOr(Schema.String),
   headBranch: Schema.NullOr(Schema.String),
