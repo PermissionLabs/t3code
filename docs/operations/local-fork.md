@@ -83,4 +83,4 @@ server rollout**. Paste the exact published version and select mini-1, mini-2, a
 MacBook in that order. Keep the page open during the rollout. Each server stages and checks
 the archive, waits for active turns and terminals, then hands off to the service launcher.
 The client advances after reconnecting to the requested version and stops the sequence on
-a failure. The custom desktop app uses the separately signed desktop build.
+a failure. Leave the selected servers idle during handoff. Work started after the final idle check can overlap a restart. The custom desktop app uses the separately signed desktop build.

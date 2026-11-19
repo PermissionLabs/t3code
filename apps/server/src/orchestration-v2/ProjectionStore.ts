@@ -7285,7 +7285,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           EXISTS (SELECT 1 FROM orchestration_v2_projection_runs
                   WHERE status IN ('queued', 'preparing', 'starting', 'running', 'waiting'))
           OR EXISTS (SELECT 1 FROM orchestration_v2_projection_runtime_requests
-                     WHERE status = 'pending') AS busy
+                     WHERE status = 'pending')
+          OR EXISTS (SELECT 1 FROM orchestration_v2_projection_turn_items item
+                     JOIN orchestration_v2_projection_threads t ON t.thread_id = item.thread_id
+                     WHERE t.deleted_at IS NULL
+                       AND item.type IN ('command_execution', 'dynamic_tool', 'subagent')
+                       AND item.status NOT IN ('completed', 'interrupted', 'failed', 'cancelled'))
+          OR EXISTS (SELECT 1 FROM orchestration_v2_projection_provider_threads provider_thread
+                     JOIN orchestration_v2_projection_threads t ON t.thread_id = provider_thread.thread_id
+                     WHERE t.deleted_at IS NULL
+                       AND json_array_length(provider_thread.payload_json, '$.pendingBackgroundTasks') > 0)
+          AS busy
       `;
         return row?.busy !== 0;
       },

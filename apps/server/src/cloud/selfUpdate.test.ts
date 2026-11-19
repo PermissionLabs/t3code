@@ -161,7 +161,7 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
           hasPendingUpdateWork: options.pendingWork ?? (() => Effect.succeed(false)),
         }),
         Layer.mock(Terminal.TerminalManager)({
-          hasRunningSessions: options.runningTerminals ?? Effect.succeed(false),
+          hasUpdateBlockingSessions: options.runningTerminals ?? Effect.succeed(false),
         }),
       ),
     ),
@@ -215,6 +215,37 @@ it.layer(NodeServices.layer)("server self update", (it) => {
       activeTerminal = false;
       yield* TestClock.adjust("2 seconds");
       expect((yield* Fiber.join(updating)).updateId).toBe("launcher-id");
+    }),
+  );
+
+  it.effect("cancels a disconnected rollout before handoff and lets another start", () =>
+    Effect.gen(function* () {
+      const busy = yield* Deferred.make<void>();
+      let hasPendingWork = true;
+      const { selfUpdate, order } = yield* makeHarness({
+        pendingWork: () => Effect.sync(() => hasPendingWork),
+        policy: {
+          schemaVersion: 1,
+          organization: "Example Corp",
+          limits: { updates: { mode: "auto", feedUrl: "https://updates.example.com/t3code/" } },
+        },
+      });
+      const input = { targetVersion: "1.1.0", waitForIdle: true };
+      const connection = yield* ServerSelfUpdate.updateProgressStream(selfUpdate, input).pipe(
+        Stream.tap((event) =>
+          event.type === "progress" && event.stage === "waiting-for-idle"
+            ? Deferred.succeed(busy, undefined)
+            : Effect.void,
+        ),
+        Stream.runDrain,
+        Effect.forkChild,
+      );
+      yield* Deferred.await(busy);
+      yield* Fiber.interrupt(connection);
+      expect(order).not.toContain("accept");
+      hasPendingWork = false;
+      expect((yield* selfUpdate.update(input)).updateId).toBe("launcher-id");
+      expect(order.filter((step) => step === "accept")).toHaveLength(1);
     }),
   );
 

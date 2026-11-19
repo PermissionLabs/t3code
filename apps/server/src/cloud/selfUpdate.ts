@@ -309,7 +309,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
 
       if (input.waitForIdle) {
         const isBusy = Effect.suspend(() => projections.hasPendingUpdateWork()).pipe(
-          Effect.flatMap((busy) => (busy ? Effect.succeed(true) : terminals.hasRunningSessions)),
+          Effect.flatMap((busy) =>
+            busy ? Effect.succeed(true) : terminals.hasUpdateBlockingSessions,
+          ),
           Effect.mapError((cause) =>
             failWith("Could not check whether the server is idle.", cause),
           ),
@@ -363,7 +365,7 @@ export const layer = Layer.effect(ServerSelfUpdate, make()).pipe(
   Layer.provide(ProcessRunner.layer),
 );
 
-// The update outlives client sockets; progress offers to a closed queue are ignored.
+// A rollout may wait indefinitely, so the client owns it until launcher handoff.
 export const updateProgressStream = (
   selfUpdate: ServerSelfUpdate["Service"],
   input: ServerSelfUpdateInput,
@@ -372,7 +374,7 @@ export const updateProgressStream = (
     const offer = (event: ServerSelfUpdateProgressEvent) =>
       Queue.offer(queue, event).pipe(Effect.ignore);
 
-    return selfUpdate
+    const run = selfUpdate
       .update(input, (stage) => offer({ type: "progress", stage }))
       .pipe(
         Effect.flatMap((result) => offer({ type: "complete", result })),
@@ -380,6 +382,6 @@ export const updateProgressStream = (
           ServerSelfUpdateError: (error) => Queue.fail(queue, error).pipe(Effect.ignore),
         }),
         Effect.andThen(Queue.end(queue).pipe(Effect.ignore)),
-        Effect.forkDetach,
       );
+    return input.waitForIdle ? Effect.forkScoped(run) : Effect.forkDetach(run);
   });

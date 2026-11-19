@@ -39,7 +39,7 @@ trap 'cp "$stage/server-package.json" apps/server/package.json; rm -rf "$stage"'
 
 corepack pnpm install --frozen-lockfile
 export PATH="$PWD/node_modules/.bin:$PATH"
-vp run --filter @t3tools/web build
+(cd apps/web && APP_VERSION="$version" vp build)
 node - "$version" <<'JS'
 const fs = require("node:fs");
 const path = "apps/server/package.json";
