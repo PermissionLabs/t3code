@@ -137,6 +137,7 @@ function entryOf(
     url: link.url,
     source: link.source,
     watching: link.watch !== undefined,
+    readStatus: link.watch === undefined ? null : (link.watch.readStatus ?? "pending"),
     state: link.snapshot?.state ?? null,
     title: link.snapshot?.title ?? null,
     headBranch: link.snapshot?.headBranch ?? null,
@@ -291,12 +292,14 @@ const make = Effect.gen(function* () {
       })
       .pipe(Effect.catchCause(dispatchFailure(PullRequestWatchFailedError)));
     const after = yield* requireThread(PullRequestWatchFailedError, thread.id);
+    const watch = watchedLink(after)?.watch;
     return {
       host: target.host,
       repository: target.repository,
       number: target.number,
       url: target.url,
-      watching: watchedLink(after)?.watch !== undefined,
+      watching: watch !== undefined,
+      readStatus: watch === undefined ? null : (watch.readStatus ?? "pending"),
       wasWatching: before?.watch !== undefined,
     };
   });

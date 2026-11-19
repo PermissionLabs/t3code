@@ -3270,6 +3270,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     { reason: "failed", activityFails: true },
     { reason: "not-found", activityFails: true },
     { reason: "forbidden", activityFails: true },
+    { reason: "unauthenticated", activityFails: false },
   ] as const)(
     "handles repeated host read failures: $reason (activity fails: $activityFails)",
     ({ reason, activityFails }) =>
@@ -3310,11 +3311,12 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           watching: true,
           link: { url: "https://github.com/pingdotgg/t3code/pull/8", source: "agent" },
         });
-        let disconnected = false;
+        let disconnected = reason === "unauthenticated";
         let passed = false;
         let genericFailure = false;
+        let detailReads = 0;
         const activityFailures = yield* Queue.unbounded<void>();
-        const readFailure = (operation: string, failure: "failed" | "not-found" | "forbidden") =>
+        const readFailure = (operation: string, failure: typeof reason) =>
           new PullRequestOperationError({
             operation,
             detail: "host read failed",
@@ -3332,8 +3334,9 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
               NodeCrypto.layer,
               Layer.mock(PullRequestService.PullRequestService)({
                 watchFingerprint: () => Effect.succeed(null),
-                detail: () =>
-                  genericFailure
+                detail: () => {
+                  detailReads += 1;
+                  return genericFailure
                     ? Effect.die("host read failed")
                     : disconnected
                       ? (activityFails ? Queue.take(activityFailures) : Effect.void).pipe(
@@ -3355,7 +3358,8 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
                               required: true,
                             },
                           ],
-                        }),
+                        });
+                },
                 activity: () =>
                   disconnected && activityFails
                     ? Queue.offer(activityFailures, undefined).pipe(
@@ -3378,31 +3382,49 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           orchestrator.getThreadRecords(threadId, ["messages"]),
           ({ messages }) => messages.flatMap((message) => message.notification?.summary ?? []),
         );
+        const authBlocked = "#8: watch blocked by host authentication";
+        const expectedDuringOutage = reason === "unauthenticated" ? [authBlocked] : [];
         yield* sweep;
-        assert.deepEqual(yield* summaries, []);
+        assert.deepEqual(yield* summaries, expectedDuringOutage);
         disconnected = true;
         for (let pass = 0; pass < 15; pass += 1) {
-          genericFailure = reason === "failed" && (pass === 0 || (pass >= 2 && pass <= 8));
+          genericFailure =
+            reason === "failed" && !activityFails && (pass === 0 || (pass >= 2 && pass <= 8));
           yield* TestClock.adjust("2 minutes");
           yield* sweep;
         }
 
         const thread = yield* orchestrator.getThreadShell(threadId);
-        if (reason !== "failed") {
+        if (reason !== "failed" && reason !== "unauthenticated") {
           assert.isUndefined(thread?.pullRequests?.[0]?.watch);
           assert.deepEqual(yield* summaries, ["#8: stopped watching, could not read it"]);
           return;
         }
         assert.isDefined(thread?.pullRequests?.[0]?.watch);
-        assert.deepEqual(yield* summaries, []);
+        assert.deepEqual(yield* summaries, expectedDuringOutage);
+        if (reason === "unauthenticated") {
+          assert.equal(thread?.pullRequests?.[0]?.watch?.readStatus, "auth-blocked");
+        }
         disconnected = false;
         genericFailure = false;
         passed = true;
+        if (reason === "failed" && activityFails) {
+          assert.equal(detailReads, 9);
+          yield* TestClock.adjust("15 minutes");
+          yield* sweep;
+          assert.equal(detailReads, 9);
+          yield* TestClock.adjust("1 minute");
+        }
         yield* sweep;
-        assert.deepEqual(yield* summaries, ["#8: checks passed"]);
+        if (reason === "failed" && activityFails) assert.equal(detailReads, 10);
+        assert.deepEqual(yield* summaries, [...expectedDuringOutage, "#8: checks passed"]);
+        assert.equal(
+          (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.watch?.readStatus,
+          "ready",
+        );
         yield* TestClock.adjust("10 minutes");
         yield* sweep;
-        assert.deepEqual(yield* summaries, ["#8: checks passed"]);
+        assert.deepEqual(yield* summaries, [...expectedDuringOutage, "#8: checks passed"]);
         yield* orchestrator.dispatch({
           type: "thread.pull-request.watch",
           commandId: CommandId.make(`pr-watch-unreadable-stop-${reason}-${activityFails}`),
