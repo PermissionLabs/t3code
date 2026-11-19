@@ -49,3 +49,38 @@ If a merge conflicts, resolve it and commit, then run `./apps/desktop/scripts/lo
 If a completed update is unsuitable, inspect the recovery branch named in `.git/local-fork-backup`. Preserve any new edits and ask an agent to recover onto a new branch; do not blindly reset the shared custom branch. Code rollback and database rollback are separate: an older build may not understand a migrated database. Restore the matching data archive only with the app stopped, after preserving the current data. Backups may contain secrets and stay local; review disk usage and remove old backups when no longer needed.
 
 `./apps/desktop/scripts/local-fork.sh status` reports the checkout, last built commit, and the stable release it is based on. Future modifications should stay on small branches based on `custom/local` and merge back after verification. Keep changes narrowly scoped to reduce upstream conflicts. If the official product eventually covers the same need, remove the redundant local patch.
+
+## Build a shared server release
+
+There are two ways to prepare a change for `custom/local`. For an upstream release, run
+`bash scripts/fork-prepare-upstream.sh` in a fork checkout synced with `pl-sync t3code`.
+It checks the fork head with the Reader and merges the latest official stable tag into a
+separate candidate worktree. Resolve conflicts there and review the candidate before opening
+the PR. For a fork-only change, open and merge the usual PR into `custom/local`.
+
+After either PR merges, sync the fork and check out the **exact remote `custom/local` SHA**
+in a clean Apple Silicon build worktree. Select the Node version in the root package manifest.
+The builder also needs Corepack, Rust/Cargo, `jq`, and the approved `pl-gh-read`.
+
+```sh
+bash scripts/fork-build-release.sh "$MERGED_SHA" "$ARTIFACT_DIRECTORY" 0.1.8
+```
+
+Use an absolute output directory. The optional third argument is a minimum version base for
+machines already running a fork whose version is ahead of the source manifest. The builder
+stamps a fork version, uses the repository's CLI archive builder, then tests that the
+packaged service launcher starts a server in a temporary T3 home. The output version
+directory contains the archive, `SHA256SUMS`, and a manifest recording the fork SHA and
+official tag. Keep each published version directory immutable.
+
+For an exact-version update, the server's `T3CODE_RELEASE_BASE_URL` must point at an approved
+HTTPS repository serving those directories at `v<version>/`. Verify download access from
+each service account before requesting an update. Keep the per-machine Reader path in service
+configuration.
+
+After each background server supports idle-wait updates, open **Settings → About → Fork
+server rollout**. Paste the exact published version and select mini-1, mini-2, and the
+MacBook in that order. Keep the page open during the rollout. Each server stages and checks
+the archive, waits for active turns and terminals, then hands off to the service launcher.
+The client advances after reconnecting to the requested version and stops the sequence on
+a failure. The custom desktop app uses the separately signed desktop build.

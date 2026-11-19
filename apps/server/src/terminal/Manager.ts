@@ -221,6 +221,8 @@ export class TerminalManager extends Context.Service<
 
     readonly closeOnSettle: (input: { readonly threadId: string }) => Effect.Effect<void>;
 
+    readonly hasRunningSessions: Effect.Effect<boolean>;
+
     readonly closeIdle: (input: {
       readonly threadId: string;
       readonly terminalId?: string;
@@ -3491,6 +3493,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     clear,
     close,
     closeIdle,
+    hasRunningSessions,
     closeOnSettle,
     subscribe,
     subscribeMetadata,

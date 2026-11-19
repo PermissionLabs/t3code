@@ -21,6 +21,8 @@ import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as Terminal from "../terminal/Manager.ts";
 import * as ServerSelfUpdate from "./selfUpdate.ts";
 
 interface HarnessOptions {
@@ -30,6 +32,8 @@ interface HarnessOptions {
   readonly preflightDuration?: Duration.Input;
   readonly preflightStarted?: Deferred.Deferred<void>;
   readonly beforeDownload?: Effect.Effect<void>;
+  readonly pendingWork?: () => Effect.Effect<boolean>;
+  readonly runningTerminals?: Effect.Effect<boolean>;
   readonly requestUpdate?: ServiceLauncherClient.ServiceLauncherClient["Service"]["requestUpdate"];
   readonly desktopAppUpdate?: DesktopAppUpdate.DesktopAppUpdate["Service"];
   readonly policy?: ManagedPolicyDocument;
@@ -150,9 +154,15 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
     Effect.provideService(HostProcess.Platform, "linux"),
     Effect.provideService(HostProcess.Architecture, "x64"),
     Effect.provide(
-      Layer.merge(
+      Layer.mergeAll(
         ServerConfig.layer({ ...config, mode: options.mode ?? "web" }),
         ManagedPolicy.layerTest(options.policy),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          hasPendingUpdateWork: options.pendingWork ?? (() => Effect.succeed(false)),
+        }),
+        Layer.mock(Terminal.TerminalManager)({
+          hasRunningSessions: options.runningTerminals ?? Effect.succeed(false),
+        }),
       ),
     ),
   );
@@ -172,6 +182,39 @@ it.layer(NodeServices.layer)("server self update", (it) => {
         (yield* desktop.selfUpdate.update({ targetVersion: "1.1.0" }).pipe(Effect.flip)).reason,
       ).toContain("desktop app");
       expect([...web.order, ...desktop.order]).toEqual([]);
+    }),
+  );
+
+  it.effect("stages the release and waits for turns and terminals before handoff", () =>
+    Effect.gen(function* () {
+      const waiting = yield* Deferred.make<void>();
+      let activeTurn = true;
+      let activeTerminal = true;
+      const { selfUpdate, order } = yield* makeHarness({
+        pendingWork: () => Effect.sync(() => activeTurn),
+        runningTerminals: Effect.sync(() => activeTerminal),
+        policy: {
+          schemaVersion: 1,
+          organization: "Example Corp",
+          limits: { updates: { mode: "auto", feedUrl: "https://updates.example.com/t3code/" } },
+        },
+      });
+      const updating = yield* Effect.forkChild(
+        selfUpdate.update({ targetVersion: "1.1.0", waitForIdle: true }, (stage) =>
+          stage === "waiting-for-idle"
+            ? Deferred.succeed(waiting, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+        ),
+      );
+      yield* Deferred.await(waiting);
+      expect(order).toContain("preflight");
+      expect(order).not.toContain("accept");
+      activeTurn = false;
+      yield* TestClock.adjust("2 seconds");
+      expect(order).not.toContain("accept");
+      activeTerminal = false;
+      yield* TestClock.adjust("2 seconds");
+      expect((yield* Fiber.join(updating)).updateId).toBe("launcher-id");
     }),
   );
 

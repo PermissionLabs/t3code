@@ -913,6 +913,7 @@ export class ServerNpmReleaseError extends Schema.TaggedError<ServerNpmReleaseEr
 export const ServerSelfUpdateInput = Schema.Struct({
   /** Exact npm version, never a dist-tag, so server and client agree on the request. */
   targetVersion: TrimmedNonEmptyString,
+  waitForIdle: Schema.optionalKey(Schema.Boolean),
   /** Desktop-managed hosts move their app to this update track first. Sent only for a track switch. */
   channel: Schema.optionalKey(DesktopUpdateChannelSchema),
   /** The target release's highest migration; the host refuses to leave Nightly without it. */
@@ -933,7 +934,11 @@ export const DesktopUpdateCommitInput = Schema.Struct({
 });
 export type DesktopUpdateCommitInput = typeof DesktopUpdateCommitInput.Type;
 
-export const ServerSelfUpdateProgressStage = Schema.Literals(["downloading", "installing"]);
+export const ServerSelfUpdateProgressStage = Schema.Literals([
+  "downloading",
+  "waiting-for-idle",
+  "installing",
+]);
 export type ServerSelfUpdateProgressStage = typeof ServerSelfUpdateProgressStage.Type;
 
 export const ServerSelfUpdateProgressEvent = Schema.Union([

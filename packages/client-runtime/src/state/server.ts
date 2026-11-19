@@ -7,6 +7,7 @@ import {
   type ServerLifecycleStreamReadyEvent,
   type ServerProviderWorkspaceSnapshot,
   type ServerSelfUpdateProgressEvent,
+  type ServerSelfUpdateProgressStage,
   type ServerSelfUpdateResult,
   shouldRecommendDatabaseCompaction,
   WS_METHODS,
@@ -62,7 +63,7 @@ import {
 
 export type { ServerConfigProjection } from "./serverConfigProjection.ts";
 
-export type ServerUpdateStage = "downloading" | "installing" | "resuming";
+export type ServerUpdateStage = ServerSelfUpdateProgressStage | "resuming";
 
 export type ServerUpdateState =
   | { readonly status: "idle" }

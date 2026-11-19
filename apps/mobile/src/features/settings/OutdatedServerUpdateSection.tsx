@@ -84,7 +84,9 @@ export function OutdatedServerUpdateSection({
               ? "Restarting and reconnecting…"
               : state.stage === "installing"
                 ? "Installing update…"
-                : "Downloading update…"
+                : state.stage === "waiting-for-idle"
+                  ? "Waiting for work to finish…"
+                  : "Downloading update…"
             : release
               ? release.targetVersion
                 ? `Version ${release.targetVersion} is available.`

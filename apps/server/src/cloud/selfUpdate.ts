@@ -13,6 +13,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Schedule from "effect/Schedule";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -32,6 +33,8 @@ import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
 import { databaseMigrationHead } from "../persistence/databaseMigrationHead.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import { managedUpdateMirror, managedUpdateRefusal } from "../policy/managedUpdates.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as Terminal from "../terminal/Manager.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import {
   ensurePinnedRuntimeInstalled,
@@ -127,6 +130,8 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   const desktopAppUpdate = yield* DesktopAppUpdate.DesktopAppUpdate;
   const policy = yield* ManagedPolicy.ManagedPolicy;
   const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const terminals = yield* Terminal.TerminalManager;
   const runner = yield* ProcessRunner.ProcessRunner;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -168,6 +173,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     if (policyRefusal !== undefined) {
       return yield* failWith(policyRefusal);
     }
+    if (input.waitForIdle && capability !== "boot-service") {
+      return yield* failWith("A fork rollout requires a background service.");
+    }
     if (capability === "desktop-managed") {
       const unsafeCrossing = input.channel === undefined ? null : crossesTrackUnsafely(input);
       if (unsafeCrossing !== null) return yield* failWith(unsafeCrossing);
@@ -192,6 +200,11 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     const unsafeCrossing = crossesTrackUnsafely(input);
     if (unsafeCrossing !== null) return yield* failWith(unsafeCrossing);
     const targetVersion = input.targetVersion.trim();
+    if (input.waitForIdle && !releaseBaseUrl?.startsWith("https://")) {
+      return yield* failWith(
+        "Configure an HTTPS release mirror on this server before starting a fork rollout.",
+      );
+    }
     if (!isExactServiceVersion(targetVersion)) {
       return yield* failWith(`'${targetVersion}' is not an exact t3 version.`);
     }
@@ -211,7 +224,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         platform,
         arch,
         releaseBaseUrl,
-        requirePublishedRelease: mirror !== undefined,
+        requirePublishedRelease: mirror !== undefined || input.waitForIdle === true,
         validate: (runtime) =>
           runner
             .run({
@@ -294,6 +307,22 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         ),
       );
 
+      if (input.waitForIdle) {
+        const isBusy = Effect.suspend(() => projections.hasPendingUpdateWork()).pipe(
+          Effect.flatMap((busy) => (busy ? Effect.succeed(true) : terminals.hasRunningSessions)),
+          Effect.mapError((cause) =>
+            failWith("Could not check whether the server is idle.", cause),
+          ),
+        );
+        if (yield* isBusy) {
+          yield* reportProgress("waiting-for-idle");
+          yield* isBusy.pipe(
+            Effect.repeat(
+              Schedule.spaced("2 seconds").pipe(Schedule.while(({ input }) => input === true)),
+            ),
+          );
+        }
+      }
       yield* reportProgress("installing");
       const updateId = yield* Effect.uninterruptible(
         launcher.requestUpdate({ targetVersion, dbPath: serverConfig.dbPath }).pipe(
@@ -315,7 +344,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         runtimePath: paths.entryPath,
       });
       return { targetVersion, method: "boot-service" as const, updateId };
-    }).pipe(Effect.onError(() => Ref.set(inFlight, false)));
+    }).pipe(
+      Effect.onExit((exit) => (exit._tag === "Failure" ? Ref.set(inFlight, false) : Effect.void)),
+    );
   });
 
   return ServerSelfUpdate.of({
