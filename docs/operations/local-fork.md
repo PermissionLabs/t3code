@@ -90,9 +90,10 @@ configuration.
 The first build with rollout support is installed on each machine by hand. After that, open
 **Settings → About → Fork server rollout** on mini-1, paste the exact published version, and
 select mini-1, mini-2, and the MacBook in that order. mini-1 drives the rollout through its
-linked environments (**Settings → Connections**), so mini-2 and the MacBook must be linked to
-mini-1 and reachable. The rollout state lives in `fork-rollout.json` under mini-1's T3 home,
-so it continues after the page closes and resumes after mini-1 restarts into the new version.
+linked environments (**Settings → Connections**). Link mini-2 and the MacBook to mini-1 with
+**Full access**: each server accepts update requests only from a full-access link. The rollout
+state lives in `fork-rollout.json` under mini-1's T3 home, so it continues after the page
+closes and resumes once mini-1 is back on the new version and its launcher has committed it.
 
 Each server stages and checks the archive, waits until it has no active turn, pending request,
 running tool, background task, or terminal, then briefly refuses new turns and terminals while
@@ -100,4 +101,5 @@ it re-checks and hands off to its service launcher. The launcher backs up the da
 the new version as a trial, and returns to the previous version and database if the trial
 fails. A step finishes when that server reports the requested version; a failed or rolled-back
 step stops the rollout before the next machine. **Stop rollout** cancels a step that is still
-waiting for idle. The custom desktop app uses the separately signed desktop build.
+waiting for idle; when that server cannot be reached, the step says so, because it may still
+restart once idle. The custom desktop app uses the separately signed desktop build.

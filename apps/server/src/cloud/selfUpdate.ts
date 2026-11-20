@@ -80,7 +80,7 @@ export class ServerSelfUpdate extends Context.Service<
     ) => Effect.Effect<never, ServerSelfUpdateError>;
     /** The fork rollout's update: waits for idle and keeps going without the requesting client. */
     readonly startJob: (targetVersion: string) => Effect.Effect<void, ServerSelfUpdateError>;
-    readonly cancelJob: Effect.Effect<void>;
+    readonly cancelJob: (targetVersion: string) => Effect.Effect<void>;
     readonly job: Effect.Effect<ServerUpdateJob>;
   }
 >()("t3/cloud/selfUpdate/ServerSelfUpdate") {}
@@ -221,6 +221,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       return yield* failWith("A server update is already in progress.");
     }
 
+    let accepted = false;
     return yield* Effect.gen(function* () {
       yield* reportProgress("downloading");
       const paths = yield* ensurePinnedRuntimeInstalled({
@@ -353,7 +354,11 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
               error,
             ),
           ),
-          Effect.tap(() => onHandoffAccepted()),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              accepted = true;
+            }).pipe(Effect.andThen(onHandoffAccepted())),
+          ),
         ),
       );
 
@@ -364,8 +369,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       });
       return { targetVersion, method: "boot-service" as const, updateId };
     }).pipe(
+      // Once the launcher accepted, it owns the restart; an interrupt after that keeps the gate shut.
       Effect.onExit((exit) =>
-        exit._tag === "Failure"
+        exit._tag === "Failure" && !accepted
           ? Ref.set(inFlight, false).pipe(Effect.andThen(updateGate.reopen))
           : Effect.void,
       ),
@@ -384,26 +390,38 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       return yield* failWith(`An update to t3@${current.targetVersion} is already in progress.`);
     }
     yield* Ref.set(job, { status: "running", targetVersion, stage: "downloading" });
-    const fiber = yield* update({ targetVersion, waitForIdle: true }, (stage) =>
-      Ref.set(job, { status: "running", targetVersion, stage }),
+    const fiber = yield* update(
+      { targetVersion, waitForIdle: true },
+      (stage) => Ref.set(job, { status: "running", targetVersion, stage }),
+      () => Ref.set(job, { status: "handed-off", targetVersion }),
     ).pipe(
-      Effect.flatMap(() => Ref.set(job, { status: "handed-off", targetVersion })),
       Effect.catchTags({
         ServerSelfUpdateError: (error) =>
           Ref.set(job, { status: "failed", targetVersion, reason: error.reason }),
       }),
       Effect.onInterrupt(() =>
-        Ref.set(job, { status: "failed", targetVersion, reason: "The update was cancelled." }),
+        Ref.update(job, (current): ServerUpdateJob =>
+          current.status === "running"
+            ? { status: "failed", targetVersion, reason: "The update was cancelled." }
+            : current,
+        ),
       ),
       Effect.forkIn(layerScope),
     );
     yield* Ref.set(jobFiber, fiber);
   });
-  const cancelJob = Effect.gen(function* () {
+  const cancelJob = Effect.fn("cloud.server_self_update.cancel_job")(function* (
+    targetVersion: string,
+  ) {
     const current = yield* Ref.get(job);
     const fiber = yield* Ref.get(jobFiber);
     // After the launcher accepts, the restart belongs to it.
-    if (current.status !== "running" || current.stage === "installing" || fiber === undefined) {
+    if (
+      current.status !== "running" ||
+      current.targetVersion !== targetVersion ||
+      current.stage === "installing" ||
+      fiber === undefined
+    ) {
       return;
     }
     yield* Fiber.interrupt(fiber);

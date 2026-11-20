@@ -979,6 +979,10 @@ export const ForkRolloutTarget = Schema.Struct({
   label: TrimmedNonEmptyString,
   status: ForkRolloutTargetStatus,
   detail: Schema.optionalKey(TrimmedNonEmptyString),
+  /** The launcher outcome the target already reported when this step began, from an earlier attempt. */
+  ignoreUpdateId: Schema.optionalKey(TrimmedNonEmptyString),
+  /** The target accepted this step's update request. */
+  started: Schema.optionalKey(Schema.Boolean),
 });
 export type ForkRolloutTarget = typeof ForkRolloutTarget.Type;
 

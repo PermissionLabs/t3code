@@ -13,9 +13,11 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
+import * as ServerSelfUpdate from "../../../cloud/selfUpdate.ts";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
 import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as ServerLifecycleEvents from "../../../serverLifecycleEvents.ts";
 import * as Settings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -93,5 +95,51 @@ it.effect("refuses a preferences update when the caller's turn ends while it wai
         ),
       ),
     );
+  }),
+);
+
+it.effect("lets only a full-access link start a server update", () =>
+  Effect.gen(function* () {
+    const started = yield* Ref.make<ReadonlyArray<string>>([]);
+    const call = (access: "auto" | "full-access", linked: boolean) =>
+      Effect.gen(function* () {
+        const toolkit = yield* EnvironmentToolkit;
+        const result = yield* toolkit
+          .handle("t3_server_update", { action: "start", version: "9.9.9" })
+          .pipe(Stream.unwrap, Stream.runCollect);
+        return result.at(-1)?.result;
+      }).pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(EnvironmentHandlers.layer).pipe(
+            Layer.provideMerge(
+              Layer.mergeAll(
+                ThreadCommandExecutor.layer,
+                Layer.succeed(McpInvocationContext.McpInvocationContext, {
+                  environmentId,
+                  requestNamespace: "client:rollout",
+                  thread: undefined,
+                  client: { sessionId: "session", label: "mini-1", access, linked },
+                  capabilities: new Set(["orchestration" as const]),
+                  issuedAt: 0,
+                }),
+                Layer.mock(ThreadManagement.ThreadManagementService)({}),
+                Layer.mock(Environment.ServerEnvironment)({}),
+                Layer.mock(Settings.ServerSettingsService)({}),
+                Layer.mock(ServerSelfUpdate.ServerSelfUpdate)({
+                  startJob: (version) => Ref.update(started, (all) => [...all, version]),
+                  job: Effect.succeed({ status: "idle" } as const),
+                }),
+                Layer.mock(ServerLifecycleEvents.ServerLifecycleEvents)({
+                  snapshot: Effect.succeed({ sequence: 0, events: [] }),
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+    expect(yield* call("auto", true)).toMatchObject({ code: "capability_denied" });
+    expect(yield* call("full-access", false)).toMatchObject({ code: "capability_denied" });
+    expect(yield* call("full-access", true)).toMatchObject({ job: { status: "idle" } });
+    expect(yield* Ref.get(started)).toEqual(["9.9.9"]);
   }),
 );

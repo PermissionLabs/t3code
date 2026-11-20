@@ -4,6 +4,7 @@ import {
   ForkRolloutError,
   type ForkRolloutStartInput,
   type ForkRolloutTarget,
+  OrchestratorMcpFailure,
   ServerSelfUpdateOutcome,
   ServerUpdateJob,
 } from "@t3tools/contracts";
@@ -18,7 +19,9 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
@@ -35,6 +38,8 @@ import { isExactServiceVersion } from "./serviceProtocol.ts";
 export const POLL_INTERVAL = "5 seconds";
 /** A peer that stays unreachable this many polls in a row fails its step. */
 const MAX_UNREACHABLE_POLLS = 180;
+/** A peer call that takes longer counts as unreachable for that poll. */
+const PEER_CALL_TIMEOUT = "30 seconds";
 
 const STATE_FILE = "fork-rollout.json";
 const decodeRollout = Schema.decodeUnknownOption(Schema.fromJsonString(ForkRollout));
@@ -53,16 +58,23 @@ type StepResult = { readonly ok: true } | { readonly ok: false; readonly detail:
 export function evaluateUpdateStep(
   version: string,
   status: PeerUpdateStatus,
+  step: { readonly ignoreUpdateId?: string | undefined; readonly started: boolean },
 ): StepResult | undefined {
   if (status.serverVersion === version) return { ok: true };
   const last = status.lastUpdate;
-  if (last !== undefined && last.targetVersion === version && last.status !== "committed") {
+  if (
+    last !== undefined &&
+    last.id !== step.ignoreUpdateId &&
+    last.targetVersion === version &&
+    last.status !== "committed"
+  ) {
     return {
       ok: false,
       detail: `Restarted on t3@${status.serverVersion} after the update ${last.status}${last.reason ? ` (${last.reason})` : ""}.`,
     };
   }
-  if (status.job.status === "failed" && status.job.targetVersion === version) {
+  // Before this step asks, a failed job is an earlier attempt's.
+  if (step.started && status.job.status === "failed" && status.job.targetVersion === version) {
     return { ok: false, detail: status.job.reason };
   }
   return undefined;
@@ -101,8 +113,10 @@ export const make = Effect.fn("ForkRolloutService.make")(function* () {
   );
   const state = yield* SubscriptionRef.make<ForkRollout | null>(stored);
   const driver = yield* Ref.make<Fiber.Fiber<void> | undefined>(undefined);
+  const commands = yield* Semaphore.make(1);
   const selfId = (yield* environment.getDescriptor).environmentId;
 
+  // Written to a temporary file and renamed, so a crash never leaves a partial state file.
   const save = Effect.fn("ForkRolloutService.save")(function* (
     change: (rollout: ForkRollout) => Partial<ForkRollout>,
   ) {
@@ -113,11 +127,9 @@ export const make = Effect.fn("ForkRolloutService.make")(function* () {
       ...change(current),
       updatedAt: DateTime.formatIso(yield* DateTime.now),
     };
-    yield* fs
-      .writeFileString(statePath, encodeRollout(next))
-      .pipe(
-        Effect.catch((cause) => Effect.logWarning("Could not save the fork rollout.", { cause })),
-      );
+    const temporary = `${statePath}.tmp`;
+    yield* fs.writeFileString(temporary, encodeRollout(next));
+    yield* fs.rename(temporary, statePath);
     yield* SubscriptionRef.set(state, next);
   });
 
@@ -127,6 +139,13 @@ export const make = Effect.fn("ForkRolloutService.make")(function* () {
         position === index ? { ...entry, ...target } : entry,
       ),
     }));
+
+  // The launcher's outcome for this process arrives with the ready event, after a trial commits.
+  const awaitReady = lifecycle.snapshot.pipe(
+    Effect.map(({ events }) => events.some((event) => event.type === "ready")),
+    Effect.repeat(Schedule.spaced("1 second").pipe(Schedule.while(({ input }) => !input))),
+    Effect.asVoid,
+  );
 
   const selfStatus = Effect.gen(function* () {
     const lastUpdate = yield* ServerLifecycleEvents.latestUpdateOutcome.pipe(
@@ -139,68 +158,108 @@ export const make = Effect.fn("ForkRolloutService.make")(function* () {
     } satisfies PeerUpdateStatus;
   });
 
-  const callPeer = (environmentId: EnvironmentId, action: "start" | "status", version: string) =>
-    peers.call({
-      environmentId,
-      tool: "t3_server_update",
-      arguments: { action, version },
-      limits: { runtimeMode: "full-access", interactionMode: "default" },
-      success: PeerUpdateStatus,
-    });
+  /** None when the peer did not answer in time or answered with a transient failure. */
+  const callPeer = (
+    environmentId: EnvironmentId,
+    action: "start" | "status" | "cancel",
+    version: string,
+  ) =>
+    peers
+      .call({
+        environmentId,
+        tool: "t3_server_update",
+        arguments: { action, version },
+        limits: { runtimeMode: "full-access", interactionMode: "default" },
+        success: PeerUpdateStatus,
+      })
+      .pipe(
+        Effect.timeoutOption(PEER_CALL_TIMEOUT),
+        // A refusal is final; anything else is a target that is restarting or briefly away.
+        Effect.catchIf(
+          (failure) => failure.code !== "capability_denied" && failure.code !== "invalid_request",
+          () => Effect.succeedNone,
+        ),
+      );
+
+  /** False when the request did not reach a peer; it is asked again on the next poll. */
+  const requestStart = (environmentId: EnvironmentId, version: string) =>
+    environmentId === selfId
+      ? selfUpdate.startJob(version).pipe(
+          Effect.as(true),
+          Effect.mapError(
+            (error) =>
+              new OrchestratorMcpFailure({ code: "orchestration_error", message: error.reason }),
+          ),
+        )
+      : callPeer(environmentId, "start", version).pipe(Effect.map(Option.isSome));
 
   const updateTarget = Effect.fn("ForkRolloutService.updateTarget")(function* (
-    environmentId: EnvironmentId,
+    index: number,
+    target: ForkRolloutTarget,
     version: string,
   ) {
-    const self = environmentId === selfId;
+    const self = target.environmentId === selfId;
     const read = self
       ? selfStatus.pipe(Effect.asSome)
-      : callPeer(environmentId, "status", version).pipe(Effect.option);
-    const first = self ? yield* selfStatus : yield* callPeer(environmentId, "status", version);
-    const settled = evaluateUpdateStep(version, first);
-    if (settled !== undefined) return settled;
-    const started = self
-      ? yield* selfUpdate.startJob(version).pipe(
-          Effect.as(undefined),
-          Effect.catchTags({
-            ServerSelfUpdateError: (error) =>
-              Effect.succeed<StepResult>({ ok: false, detail: error.reason }),
-          }),
-        )
-      : yield* callPeer(environmentId, "start", version).pipe(Effect.as(undefined));
-    if (started !== undefined) return started;
+      : callPeer(target.environmentId, "status", version);
+    let ignoreUpdateId = target.ignoreUpdateId;
+    let started = target.started === true;
+    let baseline = ignoreUpdateId !== undefined || started;
     let unreachable = 0;
     while (true) {
-      yield* Effect.sleep(POLL_INTERVAL);
       const status = yield* read;
-      if (Option.isNone(status)) {
+      if (Option.isSome(status)) {
+        unreachable = 0;
+        if (!baseline) {
+          baseline = true;
+          ignoreUpdateId = status.value.lastUpdate?.id;
+          if (ignoreUpdateId !== undefined) yield* setTarget(index, { ignoreUpdateId });
+        }
+        const result = evaluateUpdateStep(version, status.value, { ignoreUpdateId, started });
+        if (result !== undefined) return result;
+        const job = status.value.job;
+        const ours =
+          (job.status === "running" || job.status === "handed-off") &&
+          job.targetVersion === version;
+        if (ours && !started) {
+          // The request reached the target even if its reply did not.
+          started = true;
+          yield* setTarget(index, { started });
+        } else if (!ours && started) {
+          return {
+            ok: false,
+            detail: "The server restarted without installing the update.",
+          } as const;
+        } else if (!ours) {
+          const accepted = yield* requestStart(target.environmentId, version);
+          if (accepted) {
+            started = true;
+            yield* setTarget(index, { started });
+          }
+        }
+      } else {
         // A peer is unreachable while its launcher swaps runtimes.
         unreachable += 1;
         if (unreachable >= MAX_UNREACHABLE_POLLS) {
           return { ok: false, detail: "The server did not come back after restarting." } as const;
         }
-        continue;
       }
-      unreachable = 0;
-      const result = evaluateUpdateStep(version, status.value);
-      if (result !== undefined) return result;
-      if (status.value.job.status === "idle") {
-        return {
-          ok: false,
-          detail: "The server restarted without installing the update.",
-        } as const;
-      }
+      yield* Effect.sleep(POLL_INTERVAL);
     }
   });
 
   const drive: Effect.Effect<void> = Effect.gen(function* () {
+    yield* awaitReady;
     const rollout = yield* SubscriptionRef.get(state);
     if (rollout === null || rollout.status !== "running") return;
     for (const [index, target] of rollout.targets.entries()) {
       if (target.status === "done") continue;
       yield* setTarget(index, { status: "updating" });
-      const result = yield* updateTarget(target.environmentId, rollout.version).pipe(
-        Effect.catch((error) => Effect.succeed({ ok: false, detail: error.message } as const)),
+      const result = yield* updateTarget(index, target, rollout.version).pipe(
+        Effect.catchTags({
+          OrchestratorMcpFailure: (error) =>
+            Effect.succeed<StepResult>({ ok: false, detail: error.message }),
+        }),
       );
       if (!result.ok) {
         yield* setTarget(index, { status: "failed", detail: result.detail });
@@ -210,7 +269,18 @@ export const make = Effect.fn("ForkRolloutService.make")(function* () {
       yield* setTarget(index, { status: "done" });
     }
     yield* save(() => ({ status: "succeeded" }));
-  });
+  }).pipe(
+    // Without a saved state the rollout must not touch another server.
+    Effect.catch((cause) =>
+      Effect.logError("Could not save the fork rollout; it stopped.", { cause }).pipe(
+        Effect.andThen(
+          SubscriptionRef.update(state, (rollout): ForkRollout | null =>
+            rollout === null ? null : { ...rollout, status: "failed" },
+          ),
+        ),
+      ),
+    ),
+  );
 
   const launch = Effect.gen(function* () {
     const fiber = yield* drive.pipe(Effect.forkIn(scope));
@@ -249,44 +319,57 @@ export const make = Effect.fn("ForkRolloutService.make")(function* () {
       createdAt: now,
       updatedAt: now,
     });
-    yield* save(() => ({}));
+    yield* save(() => ({})).pipe(
+      Effect.catch(() =>
+        SubscriptionRef.set(state, current).pipe(
+          Effect.andThen(Effect.fail(fail("Could not save the rollout under the T3 home."))),
+        ),
+      ),
+    );
     yield* launch;
     return (yield* SubscriptionRef.get(state))!;
-  });
+  }, commands.withPermits(1));
 
-  const cancel = Effect.gen(function* () {
+  const cancel = Effect.fn("ForkRolloutService.cancel")(function* () {
     const current = yield* SubscriptionRef.get(state);
     if (current?.status !== "running") return current;
     const fiber = yield* Ref.get(driver);
     if (fiber !== undefined) yield* Fiber.interrupt(fiber);
-    const updating = current.targets.find((target) => target.status === "updating");
+    const index = current.targets.findIndex((target) => target.status === "updating");
+    const updating = current.targets[index];
+    let detail: string | undefined;
     if (updating !== undefined) {
-      yield* updating.environmentId === selfId
-        ? selfUpdate.cancelJob
-        : peers
-            .call({
-              environmentId: updating.environmentId,
-              tool: "t3_server_update",
-              arguments: { action: "cancel" },
-              limits: { runtimeMode: "full-access", interactionMode: "default" },
-              success: PeerUpdateStatus,
-            })
-            .pipe(Effect.ignore);
+      const stopped =
+        updating.environmentId === selfId
+          ? yield* selfUpdate.cancelJob(current.version).pipe(Effect.as(true))
+          : yield* callPeer(updating.environmentId, "cancel", current.version).pipe(
+              Effect.map(Option.isSome),
+              Effect.orElseSucceed(() => false),
+            );
+      if (!stopped) {
+        detail = "Could not reach this server to stop its update. It may still restart once idle.";
+      }
     }
     yield* save((rollout) => ({
       status: "cancelled",
-      targets: rollout.targets.map((target) =>
-        target.status === "updating" ? { ...target, status: "pending" } : target,
+      targets: rollout.targets.map((target, position) =>
+        position === index
+          ? { ...target, status: "pending" as const, ...(detail === undefined ? {} : { detail }) }
+          : target,
       ),
-    }));
+    })).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not save the cancelled rollout.", { cause }),
+      ),
+    );
     return yield* SubscriptionRef.get(state);
-  });
+  }, commands.withPermits(1));
 
   if (stored?.status === "running") yield* launch;
 
   return ForkRolloutService.of({
     start,
-    cancel,
+    cancel: cancel(),
     changes: SubscriptionRef.changes(state),
   });
 });

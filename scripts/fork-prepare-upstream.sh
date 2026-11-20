@@ -30,14 +30,20 @@ fi
 branch="agent/upstream-${tag#v}-${base:0:10}"
 checkout="$(dirname "$repo")/t3-upstream-${tag#v}-${base:0:10}"
 if git show-ref --verify --quiet "refs/heads/$branch"; then
+  # A rerun publishes a candidate whose conflicts were resolved, or whose PR did not open.
+  git -C "$checkout" rev-parse --verify --quiet MERGE_HEAD >/dev/null &&
+    fail "Finish the merge in $checkout first."
+  git -C "$checkout" merge-base --is-ancestor "$ref^{commit}" HEAD ||
+    fail "$branch in $checkout does not contain $tag yet."
+  [[ -z "$(git -C "$checkout" status --porcelain)" ]] || fail "Commit or discard changes in $checkout first."
   printf 'Candidate %s already exists in %s.\n' "$branch" "$checkout"
-  exit 0
-fi
-git worktree add -b "$branch" "$checkout" "$base"
-if ! git -C "$checkout" -c commit.gpgsign=false merge --no-edit "$ref"; then
-  printf 'Resolve the merge in %s before validation.\n' "$checkout" >&2
-  git -C "$checkout" diff --name-only --diff-filter=U
-  exit 2
+else
+  git worktree add -b "$branch" "$checkout" "$base"
+  if ! git -C "$checkout" -c commit.gpgsign=false merge --no-edit "$ref"; then
+    printf 'Resolve the merge in %s before validation.\n' "$checkout" >&2
+    git -C "$checkout" diff --name-only --diff-filter=U
+    exit 2
+  fi
 fi
 if git -C "$checkout" diff --quiet "$base" HEAD -- .github/workflows; then
   workflows=unchanged

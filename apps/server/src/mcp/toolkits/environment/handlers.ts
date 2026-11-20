@@ -61,14 +61,29 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
     ({ action, version }) =>
       Effect.gen(function* () {
         const selfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
-        if (action === "start") {
-          if (version === undefined || version.trim() === "") {
+        const target = version?.trim() ?? "";
+        if (action !== "status") {
+          const { client } = yield* McpInvocationContext.McpInvocationContext;
+          // Restarting this server is maintenance; only a full-access link from the rollout's server may.
+          if (
+            client?.linked !== true ||
+            McpInvocationContext.clientModeCeiling(client).runtimeMode !== "full-access"
+          ) {
             return yield* new OrchestratorMcpFailure({
-              code: "invalid_request",
-              message: "Pass the exact version to install.",
+              code: "capability_denied",
+              message:
+                "Updating this server needs a full-access link from the server running the rollout.",
             });
           }
-          yield* selfUpdate.startJob(version.trim()).pipe(
+          if (target === "") {
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "Pass the exact version.",
+            });
+          }
+        }
+        if (action === "start") {
+          yield* selfUpdate.startJob(target).pipe(
             Effect.mapError(
               (error) =>
                 new OrchestratorMcpFailure({
@@ -78,7 +93,7 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
             ),
           );
         } else if (action === "cancel") {
-          yield* selfUpdate.cancelJob;
+          yield* selfUpdate.cancelJob(target);
         }
         const lastUpdate = yield* ServerLifecycleEvents.latestUpdateOutcome;
         return {
