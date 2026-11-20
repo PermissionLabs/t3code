@@ -4,12 +4,16 @@ import {
   ExecutionEnvironmentDescriptor,
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
+  ServerSelfUpdateOutcome,
   ServerSettings,
   ServerSettingsPatch,
+  ServerUpdateJob,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
+import * as ServerSelfUpdate from "../../../cloud/selfUpdate.ts";
 import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
+import * as ServerLifecycleEvents from "../../../serverLifecycleEvents.ts";
 import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as Settings from "../../../serverSettings.ts";
@@ -67,4 +71,30 @@ const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update"
   }),
   success: Schema.Struct(PreferenceFields),
 }).annotate(Tool.Destructive, true);
-export const EnvironmentToolkit = Toolkit.make(EnvironmentReadTool, EnvironmentPreferencesTool);
+const ServerUpdateTool = Tool.make("t3_server_update", {
+  failure: OrchestratorMcpFailure,
+  failureMode: "return" as const,
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    ServerSelfUpdate.ServerSelfUpdate,
+    ServerLifecycleEvents.ServerLifecycleEvents,
+  ],
+  description:
+    "Fork rollouts drive this. `start` installs an exact published version after active work finishes; `status` reads progress; `cancel` stops before restart.",
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    action: Schema.Literals(["start", "status", "cancel"]),
+    version: Schema.optionalKey(Schema.String),
+  }),
+  success: Schema.Struct({
+    serverVersion: Schema.String,
+    job: ServerUpdateJob,
+    lastUpdate: Schema.optionalKey(ServerSelfUpdateOutcome),
+  }),
+}).annotate(Tool.Destructive, true);
+export const EnvironmentToolkit = Toolkit.make(
+  EnvironmentReadTool,
+  EnvironmentPreferencesTool,
+  ServerUpdateTool,
+);

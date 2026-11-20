@@ -24,6 +24,7 @@ import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as Terminal from "../terminal/Manager.ts";
 import * as ServerSelfUpdate from "./selfUpdate.ts";
+import * as UpdateGate from "./updateGate.ts";
 
 interface HarnessOptions {
   readonly mode?: "web" | "desktop";
@@ -37,6 +38,7 @@ interface HarnessOptions {
   readonly requestUpdate?: ServiceLauncherClient.ServiceLauncherClient["Service"]["requestUpdate"];
   readonly desktopAppUpdate?: DesktopAppUpdate.DesktopAppUpdate["Service"];
   readonly policy?: ManagedPolicyDocument;
+  readonly updateGate?: Effect.Success<ReturnType<typeof UpdateGate.make>>;
 }
 
 const archiveBytes = new TextEncoder().encode("not really a tarball");
@@ -153,6 +155,9 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
     ),
     Effect.provideService(HostProcess.Platform, "linux"),
     Effect.provideService(HostProcess.Architecture, "x64"),
+    options.updateGate === undefined
+      ? (effect) => effect
+      : Effect.provideService(UpdateGate.UpdateGate, options.updateGate),
     Effect.provide(
       Layer.mergeAll(
         ServerConfig.layer({ ...config, mode: options.mode ?? "web" }),
@@ -215,6 +220,108 @@ it.layer(NodeServices.layer)("server self update", (it) => {
       activeTerminal = false;
       yield* TestClock.adjust("2 seconds");
       expect((yield* Fiber.join(updating)).updateId).toBe("launcher-id");
+    }),
+  );
+
+  it.effect("re-checks after work admitted during the idle check commits", () =>
+    Effect.gen(function* () {
+      const gate = yield* UpdateGate.make();
+      let activeTurn = false;
+      const dispatching = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const dispatch = yield* gate
+        .admit(
+          Deferred.succeed(dispatching, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.andThen(Effect.sync(() => (activeTurn = true))),
+          ),
+        )
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(dispatching);
+      const idleChecked = yield* Deferred.make<void>();
+      let checks = 0;
+      const { selfUpdate, order } = yield* makeHarness({
+        updateGate: gate,
+        pendingWork: () =>
+          Effect.sync(() => (checks += 1)).pipe(
+            Effect.tap((count) =>
+              count === 2 ? Deferred.succeed(idleChecked, undefined) : Effect.void,
+            ),
+            Effect.as(activeTurn),
+          ),
+        policy: {
+          schemaVersion: 1,
+          organization: "Example Corp",
+          limits: { updates: { mode: "auto", feedUrl: "https://updates.example.com/t3code/" } },
+        },
+      });
+      const updating = yield* Effect.forkChild(
+        selfUpdate.update({ targetVersion: "1.1.0", waitForIdle: true }),
+      );
+      // Idle by the projections, but the admitted dispatch has not committed its turn yet.
+      yield* Deferred.await(idleChecked);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(dispatch);
+      yield* TestClock.adjust("2 seconds");
+      expect(order).not.toContain("accept");
+      // Busy again, the gate reopens until the new turn finishes.
+      yield* gate.admit(Effect.void);
+      activeTurn = false;
+      yield* TestClock.adjust("2 seconds");
+      expect((yield* Fiber.join(updating)).updateId).toBe("launcher-id");
+      expect((yield* gate.admit(Effect.void).pipe(Effect.flip))._tag).toBe("ServerUpdatingError");
+    }),
+  );
+
+  it.effect("runs a server-owned update job and reports its failure", () =>
+    Effect.gen(function* () {
+      let hasPendingWork = true;
+      let checks = 0;
+      const waiting = yield* Deferred.make<void>();
+      const gate = yield* UpdateGate.make();
+      const { selfUpdate, order } = yield* makeHarness({
+        updateGate: gate,
+        pendingWork: () =>
+          Effect.sync(() => (checks += 1)).pipe(
+            Effect.tap((count) =>
+              count === 2 ? Deferred.succeed(waiting, undefined) : Effect.void,
+            ),
+            Effect.as(hasPendingWork),
+          ),
+        requestUpdate: () =>
+          Effect.fail(
+            new ServiceLauncherClient.ServiceLauncherRejectedError({
+              targetVersion: "1.1.0",
+              reason: "Another server update is already pending.",
+            }),
+          ),
+        policy: {
+          schemaVersion: 1,
+          organization: "Example Corp",
+          limits: { updates: { mode: "auto", feedUrl: "https://updates.example.com/t3code/" } },
+        },
+      });
+      yield* selfUpdate.startJob("1.1.0");
+      yield* selfUpdate.startJob("1.1.0");
+      expect((yield* selfUpdate.startJob("1.2.0").pipe(Effect.flip)).reason).toContain(
+        "already in progress",
+      );
+      yield* Deferred.await(waiting);
+      expect(yield* selfUpdate.job).toEqual({
+        status: "running",
+        targetVersion: "1.1.0",
+        stage: "waiting-for-idle",
+      });
+      hasPendingWork = false;
+      yield* TestClock.adjust("2 seconds");
+      expect(yield* selfUpdate.job).toEqual({
+        status: "failed",
+        targetVersion: "1.1.0",
+        reason: "Another server update is already pending.",
+      });
+      expect(order).toContain("preflight");
+      // A refused handoff reopens the gate.
+      yield* gate.admit(Effect.void);
     }),
   );
 

@@ -54,3 +54,10 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(ServerLifecycleEvents, make);
+
+/** What the service launcher reported about the update that started this process, if any. */
+export const latestUpdateOutcome = Effect.gen(function* () {
+  const { events } = yield* (yield* ServerLifecycleEvents).snapshot;
+  const ready = events.find((event) => event.type === "ready");
+  return ready?.type === "ready" ? ready.payload.updateOutcome : undefined;
+});

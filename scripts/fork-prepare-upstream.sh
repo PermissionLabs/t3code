@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+# --publish pushes a clean candidate with the approved broker and opens its PR to custom/local.
+publish=false
+[[ "${1:-}" == --publish ]] && publish=true
 upstream=https://github.com/pingdotgg/t3code.git
 repo=$(git rev-parse --show-toplevel)
 cd "$repo"
@@ -26,10 +29,26 @@ fi
 
 branch="agent/upstream-${tag#v}-${base:0:10}"
 checkout="$(dirname "$repo")/t3-upstream-${tag#v}-${base:0:10}"
+if git show-ref --verify --quiet "refs/heads/$branch"; then
+  printf 'Candidate %s already exists in %s.\n' "$branch" "$checkout"
+  exit 0
+fi
 git worktree add -b "$branch" "$checkout" "$base"
 if ! git -C "$checkout" -c commit.gpgsign=false merge --no-edit "$ref"; then
   printf 'Resolve the merge in %s before validation.\n' "$checkout" >&2
   git -C "$checkout" diff --name-only --diff-filter=U
-  exit 1
+  exit 2
 fi
-printf 'Candidate: %s\nWorktree: %s\nBase: %s\n' "$branch" "$checkout" "$base"
+if git -C "$checkout" diff --quiet "$base" HEAD -- .github/workflows; then
+  workflows=unchanged
+else
+  workflows=changed
+fi
+printf 'Candidate: %s\nWorktree: %s\nBase: %s\nWorkflows: %s\n' "$branch" "$checkout" "$base" "$workflows"
+$publish || exit 0
+# The broker refuses workflow changes; a person carries those through the MacBook path.
+[[ "$workflows" == unchanged ]] || fail "$tag changes .github/workflows; hand $branch to the MacBook path."
+cd "$checkout"
+brokerctl push-agent --repo t3code --ref "$branch"
+printf 'Merges the official %s release into custom/local.\n\nPrepared by scripts/fork-prepare-upstream.sh from custom/local %s.\n' \
+  "$tag" "$base" | brokerctl open-pr --repo t3code --ref "$branch" --title "chore(fork): merge upstream $tag" --body-file -

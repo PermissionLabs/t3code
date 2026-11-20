@@ -327,6 +327,9 @@ import {
   ServerRemoveKeybindingResult,
   ServerProviderUpdatedPayload,
   ServerSelfUpdateError,
+  ForkRollout,
+  ForkRolloutError,
+  ForkRolloutStartInput,
   ServerNpmRelease,
   ServerNpmReleaseError,
   ServerNpmReleaseInput,
@@ -511,6 +514,9 @@ export const WS_METHODS = {
   serverUpdateServer: "server.updateServer",
   serverUpdateServerWithProgress: "server.updateServerWithProgress",
   serverCommitDesktopUpdate: "server.commitDesktopUpdate",
+  serverForkRolloutStart: "server.forkRollout.start",
+  serverForkRolloutCancel: "server.forkRollout.cancel",
+  serverForkRolloutSubscribe: "server.forkRollout.subscribe",
   serverUpsertKeybinding: "server.upsertKeybinding",
   serverRemoveKeybinding: "server.removeKeybinding",
   serverRunStorageCleanup: "server.runStorageCleanup",
@@ -801,6 +807,25 @@ const WsServerCommitDesktopUpdateRpc = Rpc.make(WS_METHODS.serverCommitDesktopUp
   payload: DesktopUpdateCommitInput,
   success: ServerSelfUpdateResult,
   error: Schema.Union([ServerSelfUpdateError, EnvironmentAuthorizationError]),
+});
+
+const WsServerForkRolloutStartRpc = Rpc.make(WS_METHODS.serverForkRolloutStart, {
+  payload: ForkRolloutStartInput,
+  success: ForkRollout,
+  error: Schema.Union([ForkRolloutError, EnvironmentAuthorizationError]),
+});
+
+const WsServerForkRolloutCancelRpc = Rpc.make(WS_METHODS.serverForkRolloutCancel, {
+  payload: Schema.Struct({}),
+  success: Schema.NullOr(ForkRollout),
+  error: Schema.Union([ForkRolloutError, EnvironmentAuthorizationError]),
+});
+
+const WsServerForkRolloutSubscribeRpc = Rpc.make(WS_METHODS.serverForkRolloutSubscribe, {
+  payload: Schema.Struct({}),
+  success: Schema.NullOr(ForkRollout),
+  error: EnvironmentAuthorizationError,
+  stream: true,
 });
 
 const WsServerRunStorageCleanupRpc = Rpc.make(WS_METHODS.serverRunStorageCleanup, {
@@ -2089,6 +2114,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetNpmReleaseRpc,
   WsServerUpdateServerWithProgressRpc,
   WsServerCommitDesktopUpdateRpc,
+  WsServerForkRolloutStartRpc,
+  WsServerForkRolloutCancelRpc,
+  WsServerForkRolloutSubscribeRpc,
   WsServerUpsertKeybindingRpc,
   WsServerRemoveKeybindingRpc,
   WsServerRunStorageCleanupRpc,

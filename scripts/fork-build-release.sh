@@ -28,14 +28,35 @@ minimum_version=${3:-0.0.0}
   fail 'Base version must be X.Y.Z.'
 manifest_version=$(node -p 'require("./apps/server/package.json").version.split(/[+-]/)[0]')
 server_version=$(printf '%s\n' "$minimum_version" "$manifest_version" "${base#v}" | sort -V | tail -1)
-# The checked-in version can lead the latest stable tag on the fork.
-version="$server_version-fork.$(date -u +%Y%m%d%H%M%S)+g${sha:0:10}"
+# Use the commit time in UTC so retries resolve to the same release directory.
+commit_time=$(TZ=UTC git show -s --format=%cd --date=format-local:%Y%m%d%H%M%S "$sha")
+version="$server_version-fork.$commit_time+g$sha"
 release="$output/v$version"
-[[ ! -e "$release" ]] || fail "Release already exists: $release"
+archive="t3-$version-darwin-arm64.tar.gz"
 mkdir -p "$output"
+lock="$output/.v$version.lock"
+mkdir "$lock" || fail "Release build lock already exists: $lock"
+stage=
+cleanup() {
+  if [[ -n "$stage" && -f "$stage/server-package.json" ]]; then
+    cp "$stage/server-package.json" apps/server/package.json
+  fi
+  if [[ -n "$stage" ]]; then rm -rf "$stage"; fi
+  rmdir "$lock"
+}
+trap cleanup EXIT
+if [[ -e "$release" ]]; then
+  jq -e --arg version "$version" --arg commit "$sha" --arg archive "$archive" \
+    '.version == $version and .commit == $commit and .archive == $archive' \
+    "$release/release.json" >/dev/null || fail "Release manifest mismatch: $release"
+  expected=$(cat "$release/SHA256SUMS")
+  actual=$(cd "$release" && shasum -a 256 "$archive")
+  [[ "$expected" == "$actual" ]] || fail "Release checksum mismatch: $release"
+  printf 'Release already verified: %s\n' "$release"
+  exit 0
+fi
 stage=$(mktemp -d "$output/.t3-fork-build.XXXXXX")
 cp apps/server/package.json "$stage/server-package.json"
-trap 'cp "$stage/server-package.json" apps/server/package.json; rm -rf "$stage"' EXIT
 
 corepack pnpm install --frozen-lockfile
 export PATH="$PWD/node_modules/.bin:$PATH"
@@ -53,7 +74,6 @@ cargo build --locked --release --manifest-path native/resource-monitor/Cargo.tom
 cp "$stage/cargo/release/t3-resource-monitor" "$stage/resource-monitor/darwin-arm64/"
 node scripts/build-cli-archive.ts --platform mac --arch arm64 --version "$version" \
   --resource-monitor-dir "$stage/resource-monitor" --output-dir "$stage/release"
-archive="t3-$version-darwin-arm64.tar.gz"
 protocol=$(node --input-type=module -e '
   import { SERVICE_LAUNCHER_PROTOCOL } from "./apps/server/src/cloud/serviceProtocol.ts";
   console.log(SERVICE_LAUNCHER_PROTOCOL);

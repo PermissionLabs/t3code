@@ -1,157 +1,121 @@
-import { useAtomValue } from "@effect/atom-react";
-import type { EnvironmentId } from "@t3tools/contracts";
-import { compareSemverVersions } from "@t3tools/shared/semver";
+import type { EnvironmentId, ForkRolloutTarget } from "@t3tools/contracts";
 import { useState } from "react";
 
-import { useEnvironments } from "~/state/environments";
-import { environmentIdsKey } from "~/state/environmentAtomList";
-import { environmentUpdateStatesAtom } from "~/state/server";
-import { environmentSessionStatesAtom } from "~/state/session";
+import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
+import { forkRollout } from "~/state/forkRollout";
+import { useLinkedEnvironments } from "~/state/peerLinks";
+import { useEnvironmentQuery } from "~/state/query";
+import { useAtomCommand } from "~/state/use-atom-command";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import {
-  canUpdateServer,
-  serverUpdateStageLabel,
-  type ServerUpdateOutcome,
-  type ServerUpdateTarget,
-  useServerUpdate,
-} from "../ServerUpdateAction";
 import { SettingsRow } from "./settingsLayout";
 
-const forkVersion = /^[0-9]+\.[0-9]+\.[0-9]+-fork\.[0-9]+\+g[0-9a-f]{10}$/;
+const forkVersion = /^[0-9]+\.[0-9]+\.[0-9]+-fork\.[0-9]+\+g[0-9a-f]{10,40}$/;
 
+const targetLabel: Record<ForkRolloutTarget["status"], string> = {
+  pending: "Waiting",
+  updating: "Updating after active work finishes…",
+  done: "Updated",
+  failed: "Failed",
+};
+
+/** Starts a rollout that this server drives across itself and its linked environments. */
 export function ForkServerRollout() {
+  const primaryId = usePrimaryEnvironmentId();
   const { environments } = useEnvironments();
-  const updateServer = useServerUpdate();
+  const primary = environments.find(({ environmentId }) => environmentId === primaryId);
+  const supported =
+    primaryId !== null &&
+    primary?.connection.phase === "connected" &&
+    primary.serverConfig?.environment.capabilities.serverSelfUpdateIdleWait === true;
+  const linked = useLinkedEnvironments(supported ? primaryId : null);
+  const rollout = useEnvironmentQuery(
+    supported ? forkRollout.changes({ environmentId: primaryId, input: {} }) : null,
+  ).data;
+  const start = useAtomCommand(forkRollout.start);
+  const cancel = useAtomCommand(forkRollout.cancel);
   const [version, setVersion] = useState("");
   const [order, setOrder] = useState<ReadonlyArray<EnvironmentId>>([]);
-  const [running, setRunning] = useState(false);
-  const [results, setResults] = useState<Readonly<Record<string, string>>>({});
-  const ids = environmentIdsKey(environments.map(({ environmentId }) => environmentId));
-  const sessions = useAtomValue(environmentSessionStatesAtom(ids));
-  const updates = useAtomValue(environmentUpdateStatesAtom(ids));
+  if (!supported || primary === undefined) return null;
 
-  const targets = environments.flatMap((environment, index) => {
-    const config = environment.serverConfig?.environment;
-    if (
-      config?.capabilities.serverSelfUpdate !== "boot-service" ||
-      config.capabilities.serverSelfUpdateIdleWait !== true ||
-      environment.connection.phase !== "connected" ||
-      !canUpdateServer(sessions[index]!)
-    ) {
-      return [];
-    }
-    return [
-      {
-        target: {
-          environmentId: environment.environmentId,
-          serverLabel: environment.label,
-          selfUpdate: "boot-service",
-          targetVersion: version.trim(),
-          waitForIdle: true,
-        } satisfies ServerUpdateTarget,
-        version: config.serverVersion,
-      },
-    ];
-  });
-  if (targets.length === 0 && !running && Object.keys(results).length === 0) return null;
-  const selected = order.map((id) => targets.find(({ target }) => target.environmentId === id));
-  const validVersion = forkVersion.test(version.trim());
-  const ready =
-    validVersion &&
-    selected.length > 0 &&
-    selected.every(
-      (entry) =>
-        entry !== undefined &&
-        (entry.target.targetVersion === entry.version ||
-          compareSemverVersions(entry.target.targetVersion, entry.version) > 0),
-    );
-
-  const rows = environments.flatMap((environment, index) => {
-    const id = environment.environmentId;
-    const position = order.indexOf(id);
-    const available = targets.some(({ target }) => target.environmentId === id);
-    return available || position >= 0 || results[id] !== undefined
-      ? [{ id, position, available, environment, state: updates[index] }]
-      : [];
-  });
-
-  const deploy = async () => {
-    if (!ready || running) return;
-    setRunning(true);
-    setResults({});
-    for (const entry of selected) {
-      if (entry === undefined) break;
-      const { target } = entry;
-      const id = target.environmentId;
-      if (target.targetVersion === entry.version) {
-        setResults((current) => ({ ...current, [id]: "Already on target version" }));
-        continue;
-      }
-      setResults((current) => ({ ...current, [id]: "Preparing update…" }));
-      const outcome = await updateServer(target, { quiet: true }).catch(
-        (error): ServerUpdateOutcome => ({
-          status: "failed",
-          message: error instanceof Error ? error.message : "Server update failed",
-        }),
-      );
-      if (outcome.status !== "updated") {
-        setResults((current) => ({
-          ...current,
-          [id]: outcome.status === "failed" ? outcome.message : "Update interrupted",
-        }));
-        break;
-      }
-      setResults((current) => ({ ...current, [id]: "Updated and reconnected" }));
-    }
-    setRunning(false);
-  };
+  const running = rollout?.status === "running";
+  const candidates: ReadonlyArray<readonly [EnvironmentId, string]> = [
+    [primaryId, primary.label],
+    ...linked.entries(),
+  ];
+  const ready = forkVersion.test(version.trim()) && order.length > 0 && !running;
+  const [first, ...rest] = order;
 
   return (
     <SettingsRow
       title="Fork server rollout"
-      description="Select connected servers in rollout order. Each server waits for active work to finish before restarting. Keep this page open until the rollout completes."
+      description="This server updates the selected servers in order. Each one restarts only after its active turns and terminals finish. The rollout keeps going after you close this page."
       control={
         <div className="flex w-80 max-w-full flex-col gap-2">
-          <Input
-            aria-label="Fork release version"
-            placeholder="Fork release version"
-            value={version}
-            disabled={running}
-            onChange={(event) => setVersion(event.currentTarget.value)}
-          />
-          {rows.map(({ id, position, available, environment, state }) => {
-            return (
-              <div className="flex flex-col gap-1" key={id}>
+          {running ? null : (
+            <>
+              <Input
+                aria-label="Fork release version"
+                placeholder="Fork release version"
+                value={version}
+                onChange={(event) => setVersion(event.currentTarget.value)}
+              />
+              {candidates.map(([id, label]) => {
+                const position = order.indexOf(id);
+                return (
+                  <Button
+                    key={id}
+                    size="sm"
+                    variant="outline"
+                    aria-pressed={position >= 0}
+                    onClick={() =>
+                      setOrder((ids) =>
+                        ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id],
+                      )
+                    }
+                  >
+                    {position >= 0 ? `${position + 1}. ` : ""}
+                    {label}
+                  </Button>
+                );
+              })}
+              <Button
+                size="sm"
+                disabled={!ready || first === undefined}
+                onClick={() => {
+                  if (first === undefined) return;
+                  void start({
+                    environmentId: primaryId,
+                    input: { version: version.trim(), environmentIds: [first, ...rest] },
+                  });
+                }}
+              >
+                Deploy to selected servers
+              </Button>
+            </>
+          )}
+          {rollout ? (
+            <div className="flex flex-col gap-1" aria-live="polite">
+              <span className="text-xs">
+                {rollout.version} · {rollout.status}
+              </span>
+              {rollout.targets.map((target) => (
+                <span className="text-muted-foreground text-xs" key={target.environmentId}>
+                  {target.label}: {targetLabel[target.status]}
+                  {target.detail ? `: ${target.detail}` : ""}
+                </span>
+              ))}
+              {running ? (
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={running || (!available && position < 0)}
-                  aria-pressed={position >= 0}
-                  onClick={() =>
-                    setOrder((ids) =>
-                      ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id],
-                    )
-                  }
+                  onClick={() => void cancel({ environmentId: primaryId, input: {} })}
                 >
-                  {position >= 0 ? `${position + 1}. ` : ""}
-                  {environment.label}
-                  {environment.serverConfig
-                    ? ` · ${environment.serverConfig.environment.serverVersion}`
-                    : ""}
+                  Stop rollout
                 </Button>
-                <span className="text-muted-foreground text-xs" aria-live="polite">
-                  {state?.status === "running"
-                    ? serverUpdateStageLabel(state.stage)
-                    : (results[id] ??
-                      (running && position >= 0 ? "Waiting for previous server…" : undefined))}
-                </span>
-              </div>
-            );
-          })}
-          <Button size="sm" disabled={!ready || running} onClick={() => void deploy()}>
-            {running ? "Rollout in progress" : "Deploy to selected servers"}
-          </Button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       }
     />

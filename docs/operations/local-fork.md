@@ -53,34 +53,51 @@ If a completed update is unsuitable, inspect the recovery branch named in `.git/
 ## Build a shared server release
 
 There are two ways to prepare a change for `custom/local`. For an upstream release, run
-`bash scripts/fork-prepare-upstream.sh` in a fork checkout synced with `pl-sync t3code`.
+`bash scripts/fork-prepare-upstream.sh --publish` in a fork checkout synced with `pl-sync t3code`.
 It checks the fork head with the Reader and merges the latest official stable tag into a
-separate candidate worktree. Resolve conflicts there and review the candidate before opening
-the PR. For a fork-only change, open and merge the usual PR into `custom/local`.
+separate candidate worktree. A clean candidate is pushed with `brokerctl push-agent` and opened
+as a PR to `custom/local` with `brokerctl open-pr`. A conflict stops in that worktree (exit 2);
+resolve it there, validate, then push and open the PR the same way. A release that changes
+`.github/workflows` stops before pushing, because the broker refuses workflow changes; hand
+that branch to the MacBook path. For a fork-only change, open the usual agent PR.
 
-After either PR merges, sync the fork and check out the **exact remote `custom/local` SHA**
-in a clean Apple Silicon build worktree. Select the Node version in the root package manifest.
-The builder also needs Corepack, Rust/Cargo, `jq`, and the approved `pl-gh-read`.
+Either PR merges after a passkey approval in the broker approver, which merges through the
+GitHub pull request API so branch rules apply. Then sync the fork and check out the **exact
+remote `custom/local` SHA** in a clean Apple Silicon build worktree. Select the Node version in
+the root package manifest. The builder also needs Corepack, Rust/Cargo, `jq`, and the approved
+`pl-gh-read`.
 
 ```sh
 bash scripts/fork-build-release.sh "$MERGED_SHA" "$ARTIFACT_DIRECTORY" 0.1.8
 ```
 
 Use an absolute output directory. The optional third argument is a minimum version base for
-machines already running a fork whose version is ahead of the source manifest. The builder
-stamps a fork version, uses the repository's CLI archive builder, then tests that the
-packaged service launcher starts a server in a temporary T3 home. The output version
-directory contains the archive, `SHA256SUMS`, and a manifest recording the fork SHA and
-official tag. Keep each published version directory immutable.
+machines already running a fork whose version is ahead of the source manifest. The version
+comes from the commit time and full SHA, so rerunning the build for the same commit verifies
+and reuses the existing directory instead of producing a second release. The builder uses the
+repository's CLI archive builder, then tests that the packaged service launcher starts a
+server in a temporary T3 home. The output version directory contains the archive,
+`SHA256SUMS`, and a manifest recording the fork SHA and official tag. Keep each published
+version directory immutable.
 
 For an exact-version update, the server's `T3CODE_RELEASE_BASE_URL` must point at an approved
 HTTPS repository serving those directories at `v<version>/`. Verify download access from
 each service account before requesting an update. Keep the per-machine Reader path in service
 configuration.
 
-After each background server supports idle-wait updates, open **Settings → About → Fork
-server rollout**. Paste the exact published version and select mini-1, mini-2, and the
-MacBook in that order. Keep the page open during the rollout. Each server stages and checks
-the archive, waits for active turns and terminals, then hands off to the service launcher.
-The client advances after reconnecting to the requested version and stops the sequence on
-a failure. Leave the selected servers idle during handoff. Work started after the final idle check can overlap a restart. The custom desktop app uses the separately signed desktop build.
+## Roll out to the machines
+
+The first build with rollout support is installed on each machine by hand. After that, open
+**Settings → About → Fork server rollout** on mini-1, paste the exact published version, and
+select mini-1, mini-2, and the MacBook in that order. mini-1 drives the rollout through its
+linked environments (**Settings → Connections**), so mini-2 and the MacBook must be linked to
+mini-1 and reachable. The rollout state lives in `fork-rollout.json` under mini-1's T3 home,
+so it continues after the page closes and resumes after mini-1 restarts into the new version.
+
+Each server stages and checks the archive, waits until it has no active turn, pending request,
+running tool, background task, or terminal, then briefly refuses new turns and terminals while
+it re-checks and hands off to its service launcher. The launcher backs up the database, starts
+the new version as a trial, and returns to the previous version and database if the trial
+fails. A step finishes when that server reports the requested version; a failed or rolled-back
+step stops the rollout before the next machine. **Stop rollout** cancels a step that is still
+waiting for idle. The custom desktop app uses the separately signed desktop build.

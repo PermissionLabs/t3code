@@ -1,6 +1,8 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto digest is effectful; a sync hash keeps historyPath a plain function.
 import * as NodeCrypto from "node:crypto";
 
+import * as UpdateGate from "../cloud/updateGate.ts";
+
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   DEFAULT_TERMINAL_ID,
@@ -15,6 +17,7 @@ import {
   TerminalProviderInstanceNotFoundError,
   TerminalProviderEnvironmentError,
   TerminalResizeError,
+  TerminalServerUpdatingError,
   TerminalSessionLookupError,
   TerminalWriteError,
   type TerminalAttachInput,
@@ -1516,6 +1519,7 @@ export const make = Effect.fn("TerminalManager.make")(function* () {
 export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(function* (
   options: TerminalManagerOptions,
 ) {
+  const updateGate = yield* UpdateGate.UpdateGate;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const context = yield* Effect.context<never>();
@@ -2968,10 +2972,19 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       openWithWorkspaceLease(input),
     );
 
+  const admitNewSession = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    updateGate.admit(effect).pipe(
+      Effect.catchTags({
+        ServerUpdatingError: () => Effect.fail(new TerminalServerUpdatingError()),
+      }),
+    );
+
   const open: TerminalManager["Service"]["open"] = (input) =>
-    withThreadLock(
-      input.threadId,
-      resolveLaunchInputEnvironment(input).pipe(Effect.flatMap(openLocked)),
+    admitNewSession(
+      withThreadLock(
+        input.threadId,
+        resolveLaunchInputEnvironment(input).pipe(Effect.flatMap(openLocked)),
+      ),
     );
 
   const getShell = Effect.fn("terminal.getShell")(function* (input: TerminalObserveInput) {
@@ -3003,7 +3016,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         terminalId,
         cwd: input.cwd,
       });
-      return yield* Effect.uninterruptible(openLocked(resolvedInput));
+      return yield* admitNewSession(Effect.uninterruptible(openLocked(resolvedInput)));
     }
 
     const session = existing.value;
@@ -3016,7 +3029,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         terminalId,
         cwd: input.cwd,
       });
-      return yield* Effect.uninterruptible(openLocked(resolvedInput));
+      return yield* admitNewSession(Effect.uninterruptible(openLocked(resolvedInput)));
     }
 
     if (

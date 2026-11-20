@@ -5,15 +5,18 @@ import {
   type ServerSelfUpdateProgressEvent,
   type ServerSelfUpdateProgressStage,
   type ServerSelfUpdateResult,
+  type ServerUpdateJob,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
+import * as Scope from "effect/Scope";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -47,6 +50,7 @@ import {
 } from "./pinnedRuntime.ts";
 import { decodeServicePreflightResult } from "./servicePreflight.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
+import * as UpdateGate from "./updateGate.ts";
 import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
 // A staged runtime's cold start can take over a minute on a loaded, swapping host.
@@ -74,6 +78,10 @@ export class ServerSelfUpdate extends Context.Service<
       requestId: string,
       onHandoffAccepted?: () => Effect.Effect<void>,
     ) => Effect.Effect<never, ServerSelfUpdateError>;
+    /** The fork rollout's update: waits for idle and keeps going without the requesting client. */
+    readonly startJob: (targetVersion: string) => Effect.Effect<void, ServerSelfUpdateError>;
+    readonly cancelJob: Effect.Effect<void>;
+    readonly job: Effect.Effect<ServerUpdateJob>;
   }
 >()("t3/cloud/selfUpdate/ServerSelfUpdate") {}
 
@@ -143,6 +151,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     mirror?.feedUrl ??
     Option.getOrUndefined(yield* Config.String(CLI_RELEASE_BASE_URL_ENV).pipe(Config.option));
   const inFlight = yield* Ref.make(false);
+  const updateGate = yield* UpdateGate.UpdateGate;
 
   yield* pruneRuntimesOnStart({ baseDir: serverConfig.baseDir, managed: launcher.managed }).pipe(
     Effect.forkScoped,
@@ -316,14 +325,22 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
             failWith("Could not check whether the server is idle.", cause),
           ),
         );
-        if (yield* isBusy) {
-          yield* reportProgress("waiting-for-idle");
-          yield* isBusy.pipe(
-            Effect.repeat(
-              Schedule.spaced("2 seconds").pipe(Schedule.while(({ input }) => input === true)),
-            ),
-          );
-        }
+        const waitUntilIdle = isBusy.pipe(
+          Effect.repeat(
+            Schedule.spaced("2 seconds").pipe(Schedule.while(({ input }) => input === true)),
+          ),
+        );
+        // Closing waits for admitted turn and terminal starts, so the check below sees them.
+        const closeWhenIdle: Effect.Effect<void, ServerSelfUpdateError> = Effect.gen(function* () {
+          yield* waitUntilIdle;
+          yield* updateGate.close;
+          if (yield* isBusy) {
+            yield* updateGate.reopen;
+            yield* closeWhenIdle;
+          }
+        });
+        if (yield* isBusy) yield* reportProgress("waiting-for-idle");
+        yield* closeWhenIdle;
       }
       yield* reportProgress("installing");
       const updateId = yield* Effect.uninterruptible(
@@ -347,11 +364,55 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       });
       return { targetVersion, method: "boot-service" as const, updateId };
     }).pipe(
-      Effect.onExit((exit) => (exit._tag === "Failure" ? Ref.set(inFlight, false) : Effect.void)),
+      Effect.onExit((exit) =>
+        exit._tag === "Failure"
+          ? Ref.set(inFlight, false).pipe(Effect.andThen(updateGate.reopen))
+          : Effect.void,
+      ),
     );
   });
 
+  const layerScope = yield* Scope.Scope;
+  const job = yield* Ref.make<ServerUpdateJob>({ status: "idle" });
+  const jobFiber = yield* Ref.make<Fiber.Fiber<unknown, unknown> | undefined>(undefined);
+  const startJob = Effect.fn("cloud.server_self_update.start_job")(function* (
+    targetVersion: string,
+  ) {
+    const current = yield* Ref.get(job);
+    if (current.status === "running" || current.status === "handed-off") {
+      if (current.targetVersion === targetVersion) return;
+      return yield* failWith(`An update to t3@${current.targetVersion} is already in progress.`);
+    }
+    yield* Ref.set(job, { status: "running", targetVersion, stage: "downloading" });
+    const fiber = yield* update({ targetVersion, waitForIdle: true }, (stage) =>
+      Ref.set(job, { status: "running", targetVersion, stage }),
+    ).pipe(
+      Effect.flatMap(() => Ref.set(job, { status: "handed-off", targetVersion })),
+      Effect.catchTags({
+        ServerSelfUpdateError: (error) =>
+          Ref.set(job, { status: "failed", targetVersion, reason: error.reason }),
+      }),
+      Effect.onInterrupt(() =>
+        Ref.set(job, { status: "failed", targetVersion, reason: "The update was cancelled." }),
+      ),
+      Effect.forkIn(layerScope),
+    );
+    yield* Ref.set(jobFiber, fiber);
+  });
+  const cancelJob = Effect.gen(function* () {
+    const current = yield* Ref.get(job);
+    const fiber = yield* Ref.get(jobFiber);
+    // After the launcher accepts, the restart belongs to it.
+    if (current.status !== "running" || current.stage === "installing" || fiber === undefined) {
+      return;
+    }
+    yield* Fiber.interrupt(fiber);
+  });
+
   return ServerSelfUpdate.of({
+    startJob,
+    cancelJob,
+    job: Ref.get(job),
     update,
     commitDesktopUpdate: Effect.fn("ServerSelfUpdate.commitDesktopUpdate")(
       function (requestId, onHandoffAccepted) {

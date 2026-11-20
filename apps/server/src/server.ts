@@ -182,7 +182,9 @@ import {
 } from "./cloud/managedTunnelStartup.ts";
 import * as CloudCliTokenManager from "./cloud/CliTokenManager.ts";
 import * as CloudCliState from "./cloud/CliState.ts";
+import * as ForkRollout from "./cloud/forkRollout.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
+import * as UpdateGate from "./cloud/updateGate.ts";
 import * as DesktopAppUpdate from "./desktopUpdate/DesktopAppUpdate.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
@@ -863,6 +865,8 @@ const layerMakeRoutes = Layer.mergeAll(
     ),
   ),
   Layer.provide(PreviewBrowser.layer),
+  // Settings starts fork rollouts; the driver resumes after this server's own update.
+  Layer.provide(ForkRollout.layer),
   // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
   Layer.provide(
     PeerForwarding.layer.pipe(
@@ -1264,6 +1268,8 @@ const layerMakeServer = Layer.unwrap(
       Layer.provide(VcsProcess.layer),
       Layer.provideMerge(AgentScopeLive.layer),
       Layer.provideMerge(layerPlatformServices),
+      // One gate for the orchestrator, terminals, and the self-update that closes it.
+      Layer.provideMerge(UpdateGate.layer),
     );
   }),
 ).pipe(Layer.provide(ProcessRunner.layer));

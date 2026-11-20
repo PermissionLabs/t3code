@@ -1,5 +1,8 @@
 import { OrchestratorMcpFailure, type ServerSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import packageJson from "../../../../package.json" with { type: "json" };
+import * as ServerSelfUpdate from "../../../cloud/selfUpdate.ts";
+import * as ServerLifecycleEvents from "../../../serverLifecycleEvents.ts";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
 import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as Settings from "../../../serverSettings.ts";
@@ -53,6 +56,38 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
         preferences: preferences(current),
       };
     }),
+  ),
+  t3_server_update: McpToolAccess.writes(
+    ({ action, version }) =>
+      Effect.gen(function* () {
+        const selfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
+        if (action === "start") {
+          if (version === undefined || version.trim() === "") {
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "Pass the exact version to install.",
+            });
+          }
+          yield* selfUpdate.startJob(version.trim()).pipe(
+            Effect.mapError(
+              (error) =>
+                new OrchestratorMcpFailure({
+                  code: "orchestration_error",
+                  message: error.reason,
+                }),
+            ),
+          );
+        } else if (action === "cancel") {
+          yield* selfUpdate.cancelJob;
+        }
+        const lastUpdate = yield* ServerLifecycleEvents.latestUpdateOutcome;
+        return {
+          serverVersion: packageJson.version,
+          job: yield* selfUpdate.job,
+          ...(lastUpdate === undefined ? {} : { lastUpdate }),
+        };
+      }),
+    { linkedCallers: "allowed" },
   ),
   t3_environment_preferences_update: McpToolAccess.writesEnvironment((patch, check) =>
     Effect.gen(function* () {
