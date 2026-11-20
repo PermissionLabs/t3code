@@ -8,6 +8,7 @@ import {
 } from "./environment.ts";
 import { AuthClientPresentationMetadata, ServerAuthDescriptor } from "./auth.ts";
 import {
+  EnvironmentId,
   ForwardCompatibleArray,
   IsoDateTime,
   NonNegativeInt,
@@ -913,6 +914,7 @@ export class ServerNpmReleaseError extends Schema.TaggedError<ServerNpmReleaseEr
 export const ServerSelfUpdateInput = Schema.Struct({
   /** Exact npm version, never a dist-tag, so server and client agree on the request. */
   targetVersion: TrimmedNonEmptyString,
+  waitForIdle: Schema.optionalKey(Schema.Boolean),
   /** Desktop-managed hosts move their app to this update track first. Sent only for a track switch. */
   channel: Schema.optionalKey(DesktopUpdateChannelSchema),
   /** The target release's highest migration; the host refuses to leave Nightly without it. */
@@ -933,7 +935,11 @@ export const DesktopUpdateCommitInput = Schema.Struct({
 });
 export type DesktopUpdateCommitInput = typeof DesktopUpdateCommitInput.Type;
 
-export const ServerSelfUpdateProgressStage = Schema.Literals(["downloading", "installing"]);
+export const ServerSelfUpdateProgressStage = Schema.Literals([
+  "downloading",
+  "waiting-for-idle",
+  "installing",
+]);
 export type ServerSelfUpdateProgressStage = typeof ServerSelfUpdateProgressStage.Type;
 
 export const ServerSelfUpdateProgressEvent = Schema.Union([
@@ -947,6 +953,63 @@ export const ServerSelfUpdateProgressEvent = Schema.Union([
   }),
 ]);
 export type ServerSelfUpdateProgressEvent = typeof ServerSelfUpdateProgressEvent.Type;
+
+/** A server-owned update that keeps going after the requesting client disconnects. */
+export const ServerUpdateJob = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("idle") }),
+  Schema.Struct({
+    status: Schema.Literal("running"),
+    targetVersion: TrimmedNonEmptyString,
+    stage: ServerSelfUpdateProgressStage,
+  }),
+  Schema.Struct({ status: Schema.Literal("handed-off"), targetVersion: TrimmedNonEmptyString }),
+  Schema.Struct({
+    status: Schema.Literal("failed"),
+    targetVersion: TrimmedNonEmptyString,
+    reason: TrimmedNonEmptyString,
+  }),
+]);
+export type ServerUpdateJob = typeof ServerUpdateJob.Type;
+
+export const ForkRolloutTargetStatus = Schema.Literals(["pending", "updating", "done", "failed"]);
+export type ForkRolloutTargetStatus = typeof ForkRolloutTargetStatus.Type;
+
+export const ForkRolloutTarget = Schema.Struct({
+  environmentId: EnvironmentId,
+  label: TrimmedNonEmptyString,
+  status: ForkRolloutTargetStatus,
+  detail: Schema.optionalKey(TrimmedNonEmptyString),
+  /** The launcher outcome the target already reported when this step began, from an earlier attempt. */
+  ignoreUpdateId: Schema.optionalKey(TrimmedNonEmptyString),
+  /** Start requests sent for this step, saved before each one leaves. */
+  startAttempts: Schema.optionalKey(NonNegativeInt),
+});
+export type ForkRolloutTarget = typeof ForkRolloutTarget.Type;
+
+/** A sequential rollout this server drives across itself and its linked environments. */
+export const ForkRollout = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  version: TrimmedNonEmptyString,
+  status: Schema.Literals(["running", "succeeded", "failed", "cancelled"]),
+  targets: Schema.Array(ForkRolloutTarget),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type ForkRollout = typeof ForkRollout.Type;
+
+export const ForkRolloutStartInput = Schema.Struct({
+  version: TrimmedNonEmptyString,
+  environmentIds: Schema.NonEmptyArray(EnvironmentId),
+});
+export type ForkRolloutStartInput = typeof ForkRolloutStartInput.Type;
+
+export class ForkRolloutError extends Schema.TaggedError<ForkRolloutError>()("ForkRolloutError", {
+  reason: TrimmedNonEmptyString,
+}) {
+  override get message(): string {
+    return this.reason;
+  }
+}
 
 export class ServerSelfUpdateError extends Schema.TaggedError<ServerSelfUpdateError>()(
   "ServerSelfUpdateError",

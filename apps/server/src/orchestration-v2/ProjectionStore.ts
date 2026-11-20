@@ -518,6 +518,7 @@ export interface ProjectionStoreV2Shape {
   /** Threads that are not deleted, archived ones included. */
   readonly countThreads: () => Effect.Effect<number, ProjectionStoreV2Error>;
   /** Every active thread, in shell order. */
+  readonly hasPendingUpdateWork: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly listActiveShellIndex: () => Effect.Effect<
     ReadonlyArray<ActiveShellIndexEntry>,
     ProjectionStoreV2Error
@@ -7277,6 +7278,30 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       return rows[0]?.count ?? 0;
     }, Effect.mapError(shellSnapshotReadError));
 
+    const hasPendingUpdateWork = Effect.fn("ProjectionStore.hasPendingUpdateWork")(
+      function* () {
+        const [row] = yield* sql<{ busy: number }>`
+        SELECT
+          EXISTS (SELECT 1 FROM orchestration_v2_projection_runs
+                  WHERE status IN ('queued', 'preparing', 'starting', 'running', 'waiting'))
+          OR EXISTS (SELECT 1 FROM orchestration_v2_projection_runtime_requests
+                     WHERE status = 'pending')
+          OR EXISTS (SELECT 1 FROM orchestration_v2_projection_turn_items item
+                     JOIN orchestration_v2_projection_threads t ON t.thread_id = item.thread_id
+                     WHERE t.deleted_at IS NULL
+                       AND item.type IN ('command_execution', 'dynamic_tool', 'subagent')
+                       AND item.status NOT IN ('completed', 'interrupted', 'failed', 'cancelled'))
+          OR EXISTS (SELECT 1 FROM orchestration_v2_projection_provider_threads provider_thread
+                     JOIN orchestration_v2_projection_threads t ON t.thread_id = provider_thread.thread_id
+                     WHERE t.deleted_at IS NULL
+                       AND json_array_length(provider_thread.payload_json, '$.pendingBackgroundTasks') > 0)
+          AS busy
+      `;
+        return row?.busy !== 0;
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
     const listActiveShellIndex = Effect.fn("ProjectionStore.listActiveShellIndex")(function* () {
       const rows = yield* sql<{
         readonly thread_id: string;
@@ -7553,6 +7578,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getPullRequestSnapshot: readOnReader(getPullRequestSnapshot),
       listActiveSubagentThreadIds: readOnReader(listActiveSubagentThreadIds),
       countThreads: readOnReader(countThreads),
+      hasPendingUpdateWork: readOnReader(hasPendingUpdateWork),
       listActiveShellIndex: readOnReader(listActiveShellIndex),
       readShellSnapshot: readOnReader(readShellSnapshot),
       listOlderSettledThreads: readOnReader(listOlderSettledThreads),

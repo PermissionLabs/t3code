@@ -7,6 +7,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
@@ -58,9 +59,14 @@ const runExecutable = Effect.fn("runExecutable")(function* (
   return { stdout, stderr, exitCode };
 });
 
+const encodeLauncherState = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.Struct({ protocol: Schema.Int, activeVersion: Schema.String })),
+);
+
 const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
   readonly archive: string;
   readonly expectVersion: string;
+  readonly serviceLauncherProtocol: Option.Option<string>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -128,7 +134,7 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
   }
 
   const version = yield* runExecutable(executable, ["--version"], contentDir);
-  if (version.exitCode !== 0 || !version.stdout.includes(input.expectVersion)) {
+  if (version.exitCode !== 0 || version.stdout.trim() !== `t3 v${input.expectVersion}`) {
     return yield* new CliArchiveSmokeError({
       step: "running --version",
       detail: `exit ${String(version.exitCode)}\n${version.stdout}${version.stderr}`,
@@ -147,10 +153,36 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
   const net = yield* NetService.NetService;
   const port = yield* net.findAvailablePort(47700);
   const home = path.join(scratch, "home");
+  const protocol = Option.getOrUndefined(input.serviceLauncherProtocol);
+  if (protocol !== undefined) {
+    if (!/^[1-9]\d*$/.test(protocol) || !/^[0-9][0-9A-Za-z.+-]*$/.test(input.expectVersion)) {
+      return yield* new CliArchiveSmokeError({
+        step: "configuring the service launcher",
+        detail: "Expected a positive protocol number and a filename-safe version.",
+      });
+    }
+    const runtime = path.join(home, "runtime");
+    const versions = path.join(runtime, "versions");
+    yield* fs.makeDirectory(versions, { recursive: true });
+    yield* fs.writeFileString(
+      path.join(runtime, "service-state.json"),
+      yield* encodeLauncherState({
+        protocol: Number(protocol),
+        activeVersion: input.expectVersion,
+      }),
+    );
+    yield* fs.writeFileString(
+      path.join(contentDir, ".install-complete"),
+      `${input.expectVersion}\n`,
+    );
+    yield* fs.symlink(contentDir, path.join(versions, input.expectVersion));
+  }
   const server = yield* spawner.spawn(
     ChildProcess.make(
       executable,
-      ["serve", "--host", "127.0.0.1", "--port", String(port), "--no-browser"],
+      protocol !== undefined
+        ? ["__service-launcher"]
+        : ["serve", "--host", "127.0.0.1", "--port", String(port), "--no-browser"],
       {
         cwd: contentDir,
         env: {
@@ -160,6 +192,8 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
           TMPDIR: scratch,
           TEMP: scratch,
           T3CODE_HOME: home,
+          T3CODE_HOST: "127.0.0.1",
+          T3CODE_PORT: String(port),
           // The archive has a release channel built in, so its events would
           // look like a real new install.
           T3CODE_TELEMETRY_ENABLED: "false",
@@ -210,6 +244,7 @@ const command = Command.make(
   {
     archive: Flag.String("archive"),
     expectVersion: Flag.String("expect-version"),
+    serviceLauncherProtocol: Flag.String("service-launcher-protocol").pipe(Flag.optional),
   },
   (input) => smokeCliArchive(input).pipe(Effect.scoped),
 ).pipe(Command.withDescription("Extract a CLI archive and run its executable."));

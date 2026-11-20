@@ -5,14 +5,18 @@ import {
   type ServerSelfUpdateProgressEvent,
   type ServerSelfUpdateProgressStage,
   type ServerSelfUpdateResult,
+  type ServerUpdateJob,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Schedule from "effect/Schedule";
+import * as Scope from "effect/Scope";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -32,6 +36,8 @@ import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
 import { databaseMigrationHead } from "../persistence/databaseMigrationHead.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import { managedUpdateMirror, managedUpdateRefusal } from "../policy/managedUpdates.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as Terminal from "../terminal/Manager.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import {
   ensurePinnedRuntimeInstalled,
@@ -44,6 +50,7 @@ import {
 } from "./pinnedRuntime.ts";
 import { decodeServicePreflightResult } from "./servicePreflight.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
+import * as UpdateGate from "./updateGate.ts";
 import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
 // A staged runtime's cold start can take over a minute on a loaded, swapping host.
@@ -71,6 +78,10 @@ export class ServerSelfUpdate extends Context.Service<
       requestId: string,
       onHandoffAccepted?: () => Effect.Effect<void>,
     ) => Effect.Effect<never, ServerSelfUpdateError>;
+    /** The fork rollout's update: waits for idle and keeps going without the requesting client. */
+    readonly startJob: (targetVersion: string) => Effect.Effect<void, ServerSelfUpdateError>;
+    readonly cancelJob: (targetVersion: string) => Effect.Effect<void>;
+    readonly job: Effect.Effect<ServerUpdateJob>;
   }
 >()("t3/cloud/selfUpdate/ServerSelfUpdate") {}
 
@@ -127,6 +138,8 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   const desktopAppUpdate = yield* DesktopAppUpdate.DesktopAppUpdate;
   const policy = yield* ManagedPolicy.ManagedPolicy;
   const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const terminals = yield* Terminal.TerminalManager;
   const runner = yield* ProcessRunner.ProcessRunner;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -138,6 +151,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     mirror?.feedUrl ??
     Option.getOrUndefined(yield* Config.String(CLI_RELEASE_BASE_URL_ENV).pipe(Config.option));
   const inFlight = yield* Ref.make(false);
+  const updateGate = yield* UpdateGate.UpdateGate;
 
   yield* pruneRuntimesOnStart({ baseDir: serverConfig.baseDir, managed: launcher.managed }).pipe(
     Effect.forkScoped,
@@ -168,6 +182,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     if (policyRefusal !== undefined) {
       return yield* failWith(policyRefusal);
     }
+    if (input.waitForIdle && capability !== "boot-service") {
+      return yield* failWith("A fork rollout requires a background service.");
+    }
     if (capability === "desktop-managed") {
       const unsafeCrossing = input.channel === undefined ? null : crossesTrackUnsafely(input);
       if (unsafeCrossing !== null) return yield* failWith(unsafeCrossing);
@@ -192,6 +209,11 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     const unsafeCrossing = crossesTrackUnsafely(input);
     if (unsafeCrossing !== null) return yield* failWith(unsafeCrossing);
     const targetVersion = input.targetVersion.trim();
+    if (input.waitForIdle && !releaseBaseUrl?.startsWith("https://")) {
+      return yield* failWith(
+        "Configure an HTTPS release mirror on this server before starting a fork rollout.",
+      );
+    }
     if (!isExactServiceVersion(targetVersion)) {
       return yield* failWith(`'${targetVersion}' is not an exact t3 version.`);
     }
@@ -199,6 +221,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       return yield* failWith("A server update is already in progress.");
     }
 
+    let accepted = false;
     return yield* Effect.gen(function* () {
       yield* reportProgress("downloading");
       const paths = yield* ensurePinnedRuntimeInstalled({
@@ -211,7 +234,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         platform,
         arch,
         releaseBaseUrl,
-        requirePublishedRelease: mirror !== undefined,
+        requirePublishedRelease: mirror !== undefined || input.waitForIdle === true,
         validate: (runtime) =>
           runner
             .run({
@@ -294,6 +317,32 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         ),
       );
 
+      if (input.waitForIdle) {
+        const isBusy = Effect.suspend(() => projections.hasPendingUpdateWork()).pipe(
+          Effect.flatMap((busy) =>
+            busy ? Effect.succeed(true) : terminals.hasUpdateBlockingSessions,
+          ),
+          Effect.mapError((cause) =>
+            failWith("Could not check whether the server is idle.", cause),
+          ),
+        );
+        const waitUntilIdle = isBusy.pipe(
+          Effect.repeat(
+            Schedule.spaced("2 seconds").pipe(Schedule.while(({ input }) => input === true)),
+          ),
+        );
+        // Closing waits for admitted turn and terminal starts, so the check below sees them.
+        const closeWhenIdle: Effect.Effect<void, ServerSelfUpdateError> = Effect.gen(function* () {
+          yield* waitUntilIdle;
+          yield* updateGate.close;
+          if (yield* isBusy) {
+            yield* updateGate.reopen;
+            yield* closeWhenIdle;
+          }
+        });
+        if (yield* isBusy) yield* reportProgress("waiting-for-idle");
+        yield* closeWhenIdle;
+      }
       yield* reportProgress("installing");
       const updateId = yield* Effect.uninterruptible(
         launcher.requestUpdate({ targetVersion, dbPath: serverConfig.dbPath }).pipe(
@@ -305,7 +354,11 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
               error,
             ),
           ),
-          Effect.tap(() => onHandoffAccepted()),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              accepted = true;
+            }).pipe(Effect.andThen(onHandoffAccepted())),
+          ),
         ),
       );
 
@@ -315,10 +368,69 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         runtimePath: paths.entryPath,
       });
       return { targetVersion, method: "boot-service" as const, updateId };
-    }).pipe(Effect.onError(() => Ref.set(inFlight, false)));
+    }).pipe(
+      // Once the launcher accepted, it owns the restart; an interrupt after that keeps the gate shut.
+      Effect.onExit((exit) =>
+        exit._tag === "Failure" && !accepted
+          ? Ref.set(inFlight, false).pipe(Effect.andThen(updateGate.reopen))
+          : Effect.void,
+      ),
+    );
+  });
+
+  const layerScope = yield* Scope.Scope;
+  const job = yield* Ref.make<ServerUpdateJob>({ status: "idle" });
+  const jobFiber = yield* Ref.make<Fiber.Fiber<unknown, unknown> | undefined>(undefined);
+  const startJob = Effect.fn("cloud.server_self_update.start_job")(function* (
+    targetVersion: string,
+  ) {
+    const current = yield* Ref.get(job);
+    if (current.status === "running" || current.status === "handed-off") {
+      if (current.targetVersion === targetVersion) return;
+      return yield* failWith(`An update to t3@${current.targetVersion} is already in progress.`);
+    }
+    yield* Ref.set(job, { status: "running", targetVersion, stage: "downloading" });
+    const fiber = yield* update(
+      { targetVersion, waitForIdle: true },
+      (stage) => Ref.set(job, { status: "running", targetVersion, stage }),
+      () => Ref.set(job, { status: "handed-off", targetVersion }),
+    ).pipe(
+      Effect.catchTags({
+        ServerSelfUpdateError: (error) =>
+          Ref.set(job, { status: "failed", targetVersion, reason: error.reason }),
+      }),
+      Effect.onInterrupt(() =>
+        Ref.update(job, (current): ServerUpdateJob =>
+          current.status === "running"
+            ? { status: "failed", targetVersion, reason: "The update was cancelled." }
+            : current,
+        ),
+      ),
+      Effect.forkIn(layerScope),
+    );
+    yield* Ref.set(jobFiber, fiber);
+  });
+  const cancelJob = Effect.fn("cloud.server_self_update.cancel_job")(function* (
+    targetVersion: string,
+  ) {
+    const current = yield* Ref.get(job);
+    const fiber = yield* Ref.get(jobFiber);
+    // After the launcher accepts, the restart belongs to it.
+    if (
+      current.status !== "running" ||
+      current.targetVersion !== targetVersion ||
+      current.stage === "installing" ||
+      fiber === undefined
+    ) {
+      return;
+    }
+    yield* Fiber.interrupt(fiber);
   });
 
   return ServerSelfUpdate.of({
+    startJob,
+    cancelJob,
+    job: Ref.get(job),
     update,
     commitDesktopUpdate: Effect.fn("ServerSelfUpdate.commitDesktopUpdate")(
       function (requestId, onHandoffAccepted) {
@@ -332,7 +444,7 @@ export const layer = Layer.effect(ServerSelfUpdate, make()).pipe(
   Layer.provide(ProcessRunner.layer),
 );
 
-// The update outlives client sockets; progress offers to a closed queue are ignored.
+// A rollout may wait indefinitely, so the client owns it until launcher handoff.
 export const updateProgressStream = (
   selfUpdate: ServerSelfUpdate["Service"],
   input: ServerSelfUpdateInput,
@@ -341,7 +453,7 @@ export const updateProgressStream = (
     const offer = (event: ServerSelfUpdateProgressEvent) =>
       Queue.offer(queue, event).pipe(Effect.ignore);
 
-    return selfUpdate
+    const run = selfUpdate
       .update(input, (stage) => offer({ type: "progress", stage }))
       .pipe(
         Effect.flatMap((result) => offer({ type: "complete", result })),
@@ -349,6 +461,6 @@ export const updateProgressStream = (
           ServerSelfUpdateError: (error) => Queue.fail(queue, error).pipe(Effect.ignore),
         }),
         Effect.andThen(Queue.end(queue).pipe(Effect.ignore)),
-        Effect.forkDetach,
       );
+    return input.waitForIdle ? Effect.forkScoped(run) : Effect.forkDetach(run);
   });

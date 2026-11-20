@@ -364,6 +364,15 @@ export class TerminalResizeError extends Schema.TaggedError<TerminalResizeError>
   }
 }
 
+export class TerminalServerUpdatingError extends Schema.TaggedError<TerminalServerUpdatingError>()(
+  "TerminalServerUpdatingError",
+  {},
+) {
+  override get message() {
+    return "This server is restarting for an update. Open the terminal again in a minute.";
+  }
+}
+
 export const TerminalError = Schema.Union([
   TerminalCwdError,
   TerminalHistoryError,
@@ -373,5 +382,6 @@ export const TerminalError = Schema.Union([
   TerminalNotRunningError,
   TerminalWriteError,
   TerminalResizeError,
+  TerminalServerUpdatingError,
 ]);
 export type TerminalError = typeof TerminalError.Type;

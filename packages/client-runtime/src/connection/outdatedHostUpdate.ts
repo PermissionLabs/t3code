@@ -3,6 +3,7 @@ import {
   type EnvironmentId,
   type ExecutionEnvironmentDescriptor,
   type ServerSelfUpdateInput,
+  type ServerSelfUpdateProgressStage,
   type ServerSelfUpdateResult,
   WS_METHODS,
 } from "@t3tools/contracts";
@@ -46,7 +47,7 @@ export class OutdatedHostUpdateError extends Schema.TaggedError<OutdatedHostUpda
   },
 ) {}
 
-export type OutdatedHostUpdateStage = "downloading" | "installing" | "resuming";
+export type OutdatedHostUpdateStage = ServerSelfUpdateProgressStage | "resuming";
 
 const reachOutdatedHost = Effect.fn("clientRuntime.connection.reachOutdatedHost")(function* (
   environmentId: EnvironmentId,

@@ -5,6 +5,7 @@ import type {
   OrchestrationV2SearchThreadResult,
   OrchestrationV2ThreadHistoryPage,
 } from "@t3tools/contracts";
+import * as UpdateGate from "../cloud/updateGate.ts";
 import {
   latestExecutedRun,
   latestRootProviderFailure,
@@ -201,6 +202,8 @@ const isMessageQuestionAnswer = Schema.is(
   Schema.Union([TrimmedNonEmptyString, Schema.NonEmptyArray(TrimmedNonEmptyString)]),
 );
 
+const isServerUpdatingError = Schema.is(UpdateGate.ServerUpdatingError);
+
 export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDispatchError>()(
   "OrchestratorDispatchError",
   {
@@ -210,6 +213,7 @@ export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDi
   },
 ) {
   override get message(): string {
+    if (isServerUpdatingError(this.cause)) return this.cause.message;
     return `Failed to dispatch orchestration command ${this.commandType} (${this.commandId}).`;
   }
 }
@@ -1142,7 +1146,19 @@ function lastDeliveredRunForProviderThread(
   );
 }
 
+/** Commands that can start a turn; an update closes them just before it restarts the server. */
+const UPDATE_GATED_COMMANDS: ReadonlySet<OrchestrationV2ServerCommand["type"]> = new Set([
+  "message.dispatch",
+  "queued-run.start",
+  "queue.resume",
+  "queued-message.promote-to-steer",
+  "prepared-run.retry",
+  "delegated_task.request",
+  "delegated_task.remote.request",
+]);
+
 const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(function* () {
+  const updateGate = yield* UpdateGate.UpdateGate;
   const checkpointService = yield* CheckpointServiceV2;
   const commandPolicy = yield* CommandPolicyV2;
   const contextHandoffService = yield* ContextHandoffServiceV2;
@@ -14289,7 +14305,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   }, withCommandMetrics);
 
   // dispatchWithReceiptEffect owns the dispatch span; this wrapper selects the thread locks.
-  const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
+  const dispatchWithReceipt = (command: OrchestrationV2ServerCommand) =>
+    UPDATE_GATED_COMMANDS.has(command.type)
+      ? updateGate.admit(lockedDispatch(command)).pipe(
+          Effect.catchTags({
+            ServerUpdatingError: (cause) =>
+              Effect.fail(
+                new OrchestratorDispatchError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  cause,
+                }),
+              ),
+          }),
+        )
+      : lockedDispatch(command);
+
+  const lockedDispatch = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
     const dispatch = threadDispatch.withLock(
       commandThreadId(command),
       dispatchWithReceiptEffect(command),
