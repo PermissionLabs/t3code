@@ -57,6 +57,7 @@ const makeService = Effect.fn("test.make_fork_rollout")(function* (input: {
   readonly files: Map<string, string>;
   readonly peers: Partial<Record<string, PeerScript>>;
   readonly calls: Array<string>;
+  readonly refuseStart?: OrchestratorMcpFailure;
 }) {
   const served = new Map<string, number>();
   const peerClient = PeerMcpClient.PeerMcpClient.of({
@@ -67,6 +68,7 @@ const makeService = Effect.fn("test.make_fork_rollout")(function* (input: {
         const script = input.peers[request.environmentId] ?? [];
         const index = served.get(request.environmentId) ?? 0;
         if (action === "status") served.set(request.environmentId, index + 1);
+        if (action === "start" && input.refuseStart) return Effect.fail(input.refuseStart);
         const reply = script[Math.min(index, script.length - 1)] ?? idle();
         return isFailure(reply) ? Effect.fail(reply) : Effect.succeed(reply);
       }) as never,
@@ -283,6 +285,50 @@ it.layer(NodeServices.layer)("fork rollout", (it) => {
       expect(cancelled?.status).toBe("cancelled");
       expect(cancelled?.targets[0]?.detail).toContain("may still restart");
       expect(calls.at(-1)).toBe(`${MINI_2}:cancel`);
+    }),
+  );
+
+  it.effect("fails a step at once when the server refuses the start", () =>
+    Effect.gen(function* () {
+      const calls: Array<string> = [];
+      const service = yield* makeService({
+        files: new Map(),
+        calls,
+        peers: { [MINI_2]: [idle()] },
+        refuseStart: new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "An update to t3@0.1.9 is already in progress.",
+        }),
+      });
+      const done = yield* settled(service);
+      yield* service.start({ version: TARGET, environmentIds: [MINI_2] });
+      const rollout = yield* Fiber.join(done);
+      expect(rollout.targets[0]).toMatchObject({
+        status: "failed",
+        detail: "An update to t3@0.1.9 is already in progress.",
+      });
+      expect(calls).toEqual([`${MINI_2}:status`, `${MINI_2}:start`]);
+    }),
+  );
+
+  it.effect("says a cancelled server was already restarting into the update", () =>
+    Effect.gen(function* () {
+      const service = yield* makeService({
+        files: new Map(),
+        calls: [],
+        peers: {
+          [MINI_2]: [
+            idle(),
+            { serverVersion: "0.1.8", job: { status: "handed-off", targetVersion: TARGET } },
+          ],
+        },
+      });
+      yield* service.start({ version: TARGET, environmentIds: [MINI_2] });
+      yield* TestClock.adjust(ForkRollout.POLL_INTERVAL);
+      const cancelled = yield* service.cancel;
+      expect(cancelled?.targets[0]?.detail).toBe(
+        "This server was already restarting into the update.",
+      );
     }),
   );
 

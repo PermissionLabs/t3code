@@ -31,10 +31,12 @@ branch="agent/upstream-${tag#v}-${base:0:10}"
 checkout="$(dirname "$repo")/t3-upstream-${tag#v}-${base:0:10}"
 if git show-ref --verify --quiet "refs/heads/$branch"; then
   # A rerun publishes a candidate whose conflicts were resolved, or whose PR did not open.
+  [[ "$(git -C "$checkout" symbolic-ref -q HEAD)" == "refs/heads/$branch" ]] ||
+    fail "Check out $branch in $checkout first."
   git -C "$checkout" rev-parse --verify --quiet MERGE_HEAD >/dev/null &&
     fail "Finish the merge in $checkout first."
-  git -C "$checkout" merge-base --is-ancestor "$ref^{commit}" HEAD ||
-    fail "$branch in $checkout does not contain $tag yet."
+  git merge-base --is-ancestor "$ref^{commit}" "refs/heads/$branch" ||
+    fail "$branch does not contain $tag yet."
   [[ -z "$(git -C "$checkout" status --porcelain)" ]] || fail "Commit or discard changes in $checkout first."
   printf 'Candidate %s already exists in %s.\n' "$branch" "$checkout"
 else

@@ -83,11 +83,12 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
           }
         }
         if (action === "start") {
+          // A refused start (another version in progress) is final for the caller, not transient.
           yield* selfUpdate.startJob(target).pipe(
             Effect.mapError(
               (error) =>
                 new OrchestratorMcpFailure({
-                  code: "orchestration_error",
+                  code: "invalid_request",
                   message: error.reason,
                 }),
             ),
