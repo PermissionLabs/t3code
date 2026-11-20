@@ -35,6 +35,7 @@ const STATE_PATH = `${BASE_DIR}/fork-rollout.json`;
 
 interface Status {
   readonly serverVersion: string;
+  readonly ready?: boolean;
   readonly job: ServerUpdateJob;
   readonly lastUpdate?: ServerSelfUpdateOutcome;
 }
@@ -58,6 +59,7 @@ const makeService = Effect.fn("test.make_fork_rollout")(function* (input: {
   readonly peers: Partial<Record<string, PeerScript>>;
   readonly calls: Array<string>;
   readonly refuseStart?: OrchestratorMcpFailure;
+  readonly failWrites?: { value: boolean };
 }) {
   const served = new Map<string, number>();
   const peerClient = PeerMcpClient.PeerMcpClient.of({
@@ -82,7 +84,10 @@ const makeService = Effect.fn("test.make_fork_rollout")(function* (input: {
           ? Effect.fail(new Error("missing") as never)
           : Effect.succeed(content);
       }),
-    writeFileString: (path, content) => Effect.sync(() => void input.files.set(path, content)),
+    writeFileString: (path, content) =>
+      input.failWrites?.value
+        ? Effect.fail(new Error("disk full") as never)
+        : Effect.sync(() => void input.files.set(path, content)),
     rename: (from, to) =>
       Effect.sync(() => {
         input.files.set(to, input.files.get(from)!);
@@ -251,7 +256,7 @@ it.layer(NodeServices.layer)("fork rollout", (it) => {
         version: packageJson.version,
         status: "running",
         targets: [
-          { environmentId: SELF, label: "mini-1", status: "updating", started: true },
+          { environmentId: SELF, label: "mini-1", status: "updating", startAttempts: 1 },
           { environmentId: MINI_2, label: "mini-2", status: "pending" },
         ],
         createdAt: "2026-11-20T00:00:00.000Z",
@@ -329,6 +334,76 @@ it.layer(NodeServices.layer)("fork rollout", (it) => {
       expect(cancelled?.targets[0]?.detail).toBe(
         "This server was already restarting into the update.",
       );
+    }),
+  );
+
+  it.effect("waits for a restarted peer's ready event before reading its outcome", () =>
+    Effect.gen(function* () {
+      const calls: Array<string> = [];
+      const rolledBack: ServerSelfUpdateOutcome = {
+        id: "this-attempt",
+        fromVersion: "0.1.8",
+        targetVersion: TARGET,
+        status: "rolled-back",
+      };
+      const service = yield* makeService({
+        files: new Map(),
+        calls,
+        peers: {
+          [MINI_2]: [idle(), { ...idle(), ready: false }, { ...idle(), lastUpdate: rolledBack }],
+        },
+      });
+      const done = yield* settled(service);
+      yield* service.start({ version: TARGET, environmentIds: [MINI_2] });
+      yield* TestClock.adjust("1 minute");
+      const rollout = yield* Fiber.join(done);
+      expect(rollout.targets[0]?.status).toBe("failed");
+      expect(calls.filter((call) => call.endsWith(":start"))).toHaveLength(1);
+    }),
+  );
+
+  it.effect("counts start requests across this server's restarts", () =>
+    Effect.gen(function* () {
+      const running: ForkRolloutState = {
+        id: "rollout-1",
+        version: TARGET,
+        status: "running",
+        targets: [{ environmentId: MINI_2, label: "mini-2", status: "updating", startAttempts: 3 }],
+        createdAt: "2026-11-20T00:00:00.000Z",
+        updatedAt: "2026-11-20T00:00:00.000Z",
+      };
+      const calls: Array<string> = [];
+      const service = yield* makeService({
+        files: new Map([[STATE_PATH, JSON.stringify(running)]]),
+        calls,
+        peers: { [MINI_2]: [idle()] },
+      });
+      const rollout = yield* Fiber.join(yield* settled(service));
+      expect(rollout.targets[0]).toMatchObject({
+        status: "failed",
+        detail: "The server did not start the update.",
+      });
+      expect(calls).toEqual([`${MINI_2}:status`]);
+    }),
+  );
+
+  it.effect("saves a cancel again after a failed save", () =>
+    Effect.gen(function* () {
+      const files = new Map<string, string>();
+      const failWrites = { value: false };
+      const service = yield* makeService({
+        files,
+        calls: [],
+        failWrites,
+        peers: { [MINI_2]: [idle(), waiting] },
+      });
+      yield* service.start({ version: TARGET, environmentIds: [MINI_2] });
+      failWrites.value = true;
+      expect((yield* service.cancel.pipe(Effect.flip)).reason).toContain("Stop it again");
+      expect(JSON.parse(files.get(STATE_PATH)!).status).toBe("running");
+      failWrites.value = false;
+      yield* service.cancel;
+      expect(JSON.parse(files.get(STATE_PATH)!).status).toBe("cancelled");
     }),
   );
 

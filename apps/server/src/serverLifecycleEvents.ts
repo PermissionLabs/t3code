@@ -61,3 +61,9 @@ export const latestUpdateOutcome = Effect.gen(function* () {
   const ready = events.find((event) => event.type === "ready");
   return ready?.type === "ready" ? ready.payload.updateOutcome : undefined;
 });
+
+/** Whether this process finished starting, so its update outcome above is final. */
+export const isReady = Effect.gen(function* () {
+  const { events } = yield* (yield* ServerLifecycleEvents).snapshot;
+  return events.some((event) => event.type === "ready");
+});

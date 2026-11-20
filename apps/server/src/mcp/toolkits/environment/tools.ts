@@ -89,6 +89,7 @@ const ServerUpdateTool = Tool.make("t3_server_update", {
   }),
   success: Schema.Struct({
     serverVersion: Schema.String,
+    ready: Schema.Boolean,
     job: ServerUpdateJob,
     lastUpdate: Schema.optionalKey(ServerSelfUpdateOutcome),
   }),

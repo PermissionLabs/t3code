@@ -981,8 +981,8 @@ export const ForkRolloutTarget = Schema.Struct({
   detail: Schema.optionalKey(TrimmedNonEmptyString),
   /** The launcher outcome the target already reported when this step began, from an earlier attempt. */
   ignoreUpdateId: Schema.optionalKey(TrimmedNonEmptyString),
-  /** The target accepted this step's update request. */
-  started: Schema.optionalKey(Schema.Boolean),
+  /** Start requests sent for this step, saved before each one leaves. */
+  startAttempts: Schema.optionalKey(NonNegativeInt),
 });
 export type ForkRolloutTarget = typeof ForkRolloutTarget.Type;
 

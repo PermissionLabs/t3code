@@ -99,6 +99,7 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
         const lastUpdate = yield* ServerLifecycleEvents.latestUpdateOutcome;
         return {
           serverVersion: packageJson.version,
+          ready: yield* ServerLifecycleEvents.isReady,
           job: yield* selfUpdate.job,
           ...(lastUpdate === undefined ? {} : { lastUpdate }),
         };

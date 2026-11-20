@@ -44,11 +44,14 @@ const MAX_START_ATTEMPTS = 3;
 const PEER_CALL_TIMEOUT = "30 seconds";
 
 const STATE_FILE = "fork-rollout.json";
+const CANCEL_UNSAVED =
+  "Stopped the rollout, but could not save that. Stop it again, or it resumes if this server restarts.";
 const decodeRollout = Schema.decodeUnknownOption(Schema.fromJsonString(ForkRollout));
 const encodeRollout = Schema.encodeSync(Schema.fromJsonString(ForkRollout));
 
 const PeerUpdateStatus = Schema.Struct({
   serverVersion: Schema.String,
+  ready: Schema.optionalKey(Schema.Boolean),
   job: ServerUpdateJob,
   lastUpdate: Schema.optionalKey(ServerSelfUpdateOutcome),
 });
@@ -116,6 +119,8 @@ export const make = Effect.fn("ForkRolloutService.make")(function* () {
   const state = yield* SubscriptionRef.make<ForkRollout | null>(stored);
   const driver = yield* Ref.make<Fiber.Fiber<void> | undefined>(undefined);
   const commands = yield* Semaphore.make(1);
+  // A cancel that could not be saved; the next cancel saves it again.
+  const unsavedCancel = yield* Ref.make(false);
   const selfId = (yield* environment.getDescriptor).environmentId;
 
   // Written to a temporary file and renamed, so a crash never leaves a partial state file.
@@ -155,6 +160,7 @@ export const make = Effect.fn("ForkRolloutService.make")(function* () {
     );
     return {
       serverVersion: packageJson.version,
+      ready: true,
       job: yield* selfUpdate.job,
       ...(lastUpdate === undefined ? {} : { lastUpdate }),
     } satisfies PeerUpdateStatus;
@@ -205,40 +211,38 @@ export const make = Effect.fn("ForkRolloutService.make")(function* () {
       ? selfStatus.pipe(Effect.asSome)
       : callPeer(target.environmentId, "status", version);
     let ignoreUpdateId = target.ignoreUpdateId;
-    let started = target.started === true;
-    let attempts = 0;
+    let attempts = target.startAttempts ?? 0;
     let unreachable = 0;
+    // Saved before the request leaves, so a lost reply or a restart here keeps both.
+    const requestNext = Effect.gen(function* () {
+      attempts += 1;
+      yield* setTarget(index, {
+        startAttempts: attempts,
+        ...(ignoreUpdateId === undefined ? {} : { ignoreUpdateId }),
+      });
+      yield* requestStart(target.environmentId, version);
+    });
     while (true) {
       const status = yield* read;
-      if (Option.isSome(status)) {
+      // Until its ready event, a restarted server has not reported its launcher's outcome.
+      if (Option.isSome(status) && status.value.ready !== false) {
         unreachable = 0;
-        if (!started) {
-          // Saved before the request leaves, so a lost reply or a restart here keeps the baseline.
+        const started = attempts > 0;
+        if (!started && ignoreUpdateId === undefined) {
           ignoreUpdateId = status.value.lastUpdate?.id;
-          const before = evaluateUpdateStep(version, status.value, { ignoreUpdateId, started });
-          if (before !== undefined) return before;
-          started = true;
-          yield* setTarget(index, {
-            started,
-            ...(ignoreUpdateId === undefined ? {} : { ignoreUpdateId }),
-          });
-          attempts += 1;
-          yield* requestStart(target.environmentId, version);
-        } else {
-          const result = evaluateUpdateStep(version, status.value, { ignoreUpdateId, started });
-          if (result !== undefined) return result;
-          const job = status.value.job;
-          const ours =
-            (job.status === "running" || job.status === "handed-off") &&
-            job.targetVersion === version;
-          if (!ours) {
-            // The request was lost, or the server restarted without installing it.
-            if (attempts >= MAX_START_ATTEMPTS) {
-              return { ok: false, detail: "The server did not start the update." } as const;
-            }
-            attempts += 1;
-            yield* requestStart(target.environmentId, version);
+        }
+        const result = evaluateUpdateStep(version, status.value, { ignoreUpdateId, started });
+        if (result !== undefined) return result;
+        const job = status.value.job;
+        const ours =
+          (job.status === "running" || job.status === "handed-off") &&
+          job.targetVersion === version;
+        if (!ours) {
+          // Not asked yet, the request was lost, or the server restarted without installing it.
+          if (attempts >= MAX_START_ATTEMPTS) {
+            return { ok: false, detail: "The server did not start the update." } as const;
           }
+          yield* requestNext;
         }
       } else {
         // A peer is unreachable while its launcher swaps runtimes.
@@ -335,7 +339,15 @@ export const make = Effect.fn("ForkRolloutService.make")(function* () {
 
   const cancel = Effect.fn("ForkRolloutService.cancel")(function* () {
     const current = yield* SubscriptionRef.get(state);
-    if (current?.status !== "running") return current;
+    if (current?.status !== "running") {
+      if (yield* Ref.get(unsavedCancel)) {
+        yield* save(() => ({})).pipe(
+          Effect.mapError(() => new ForkRolloutError({ reason: CANCEL_UNSAVED })),
+        );
+        yield* Ref.set(unsavedCancel, false);
+      }
+      return current;
+    }
     const fiber = yield* Ref.get(driver);
     if (fiber !== undefined) yield* Fiber.interrupt(fiber);
     const index = current.targets.findIndex((target) => target.status === "updating");
@@ -382,9 +394,8 @@ export const make = Effect.fn("ForkRolloutService.make")(function* () {
       yield* SubscriptionRef.update(state, (rollout) =>
         rollout === null ? null : { ...rollout, ...cancelled(rollout) },
       );
-      return yield* new ForkRolloutError({
-        reason: "Stopped the rollout, but could not save that. It resumes if this server restarts.",
-      });
+      yield* Ref.set(unsavedCancel, true);
+      return yield* new ForkRolloutError({ reason: CANCEL_UNSAVED });
     }
     return yield* SubscriptionRef.get(state);
   }, commands.withPermits(1));
