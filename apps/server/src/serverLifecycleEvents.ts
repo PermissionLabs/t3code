@@ -55,15 +55,14 @@ const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(ServerLifecycleEvents, make);
 
-/** What the service launcher reported about the update that started this process, if any. */
-export const latestUpdateOutcome = Effect.gen(function* () {
+/**
+ * Whether this process finished starting, and what the service launcher reported about the update
+ * that started it. Read from one snapshot, so a ready server's outcome is never missed.
+ */
+export const startupState = Effect.gen(function* () {
   const { events } = yield* (yield* ServerLifecycleEvents).snapshot;
   const ready = events.find((event) => event.type === "ready");
-  return ready?.type === "ready" ? ready.payload.updateOutcome : undefined;
-});
-
-/** Whether this process finished starting, so its update outcome above is final. */
-export const isReady = Effect.gen(function* () {
-  const { events } = yield* (yield* ServerLifecycleEvents).snapshot;
-  return events.some((event) => event.type === "ready");
+  return ready?.type === "ready"
+    ? { ready: true, updateOutcome: ready.payload.updateOutcome }
+    : { ready: false, updateOutcome: undefined };
 });

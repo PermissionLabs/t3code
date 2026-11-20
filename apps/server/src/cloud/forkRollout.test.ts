@@ -362,6 +362,29 @@ it.layer(NodeServices.layer)("fork rollout", (it) => {
     }),
   );
 
+  it.effect("follows an update already under way and reports its rollback", () =>
+    Effect.gen(function* () {
+      const calls: Array<string> = [];
+      const rolledBack: ServerSelfUpdateOutcome = {
+        id: "under-way",
+        fromVersion: "0.1.8",
+        targetVersion: TARGET,
+        status: "rolled-back",
+      };
+      const service = yield* makeService({
+        files: new Map(),
+        calls,
+        peers: { [MINI_2]: [waiting, { ...idle(), lastUpdate: rolledBack }] },
+      });
+      const done = yield* settled(service);
+      yield* service.start({ version: TARGET, environmentIds: [MINI_2] });
+      yield* TestClock.adjust("1 minute");
+      const rollout = yield* Fiber.join(done);
+      expect(rollout.targets[0]?.status).toBe("failed");
+      expect(calls.filter((call) => call.endsWith(":start"))).toEqual([]);
+    }),
+  );
+
   it.effect("counts start requests across this server's restarts", () =>
     Effect.gen(function* () {
       const running: ForkRolloutState = {

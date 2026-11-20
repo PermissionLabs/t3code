@@ -96,10 +96,10 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
         } else if (action === "cancel") {
           yield* selfUpdate.cancelJob(target);
         }
-        const lastUpdate = yield* ServerLifecycleEvents.latestUpdateOutcome;
+        const { ready, updateOutcome: lastUpdate } = yield* ServerLifecycleEvents.startupState;
         return {
           serverVersion: packageJson.version,
-          ready: yield* ServerLifecycleEvents.isReady,
+          ready,
           job: yield* selfUpdate.job,
           ...(lastUpdate === undefined ? {} : { lastUpdate }),
         };

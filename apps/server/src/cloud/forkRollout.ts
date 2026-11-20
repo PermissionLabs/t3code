@@ -155,7 +155,7 @@ export const make = Effect.fn("ForkRolloutService.make")(function* () {
   );
 
   const selfStatus = Effect.gen(function* () {
-    const lastUpdate = yield* ServerLifecycleEvents.latestUpdateOutcome.pipe(
+    const { updateOutcome: lastUpdate } = yield* ServerLifecycleEvents.startupState.pipe(
       Effect.provideService(ServerLifecycleEvents.ServerLifecycleEvents, lifecycle),
     );
     return {
@@ -212,6 +212,7 @@ export const make = Effect.fn("ForkRolloutService.make")(function* () {
       : callPeer(target.environmentId, "status", version);
     let ignoreUpdateId = target.ignoreUpdateId;
     let attempts = target.startAttempts ?? 0;
+    let baseline = attempts > 0 || ignoreUpdateId !== undefined;
     let unreachable = 0;
     // Saved before the request leaves, so a lost reply or a restart here keeps both.
     const requestNext = Effect.gen(function* () {
@@ -227,16 +228,28 @@ export const make = Effect.fn("ForkRolloutService.make")(function* () {
       // Until its ready event, a restarted server has not reported its launcher's outcome.
       if (Option.isSome(status) && status.value.ready !== false) {
         unreachable = 0;
-        const started = attempts > 0;
-        if (!started && ignoreUpdateId === undefined) {
+        // The outcome this step began from, read once.
+        if (!baseline) {
+          baseline = true;
           ignoreUpdateId = status.value.lastUpdate?.id;
         }
-        const result = evaluateUpdateStep(version, status.value, { ignoreUpdateId, started });
-        if (result !== undefined) return result;
         const job = status.value.job;
         const ours =
           (job.status === "running" || job.status === "handed-off") &&
           job.targetVersion === version;
+        if (ours && attempts === 0) {
+          // An update to this version is already under way there; this step follows it.
+          attempts = 1;
+          yield* setTarget(index, {
+            startAttempts: attempts,
+            ...(ignoreUpdateId === undefined ? {} : { ignoreUpdateId }),
+          });
+        }
+        const result = evaluateUpdateStep(version, status.value, {
+          ignoreUpdateId,
+          started: attempts > 0,
+        });
+        if (result !== undefined) return result;
         if (!ours) {
           // Not asked yet, the request was lost, or the server restarted without installing it.
           if (attempts >= MAX_START_ATTEMPTS) {
@@ -333,6 +346,7 @@ export const make = Effect.fn("ForkRolloutService.make")(function* () {
         ),
       ),
     );
+    yield* Ref.set(unsavedCancel, false);
     yield* launch;
     return (yield* SubscriptionRef.get(state))!;
   }, commands.withPermits(1));
