@@ -135,6 +135,8 @@ if [ "$mode" = install ]; then
   take_lock "$lock"
   take_install_lock
   running && fail "$product is running. Quit it (Cmd-Q) before installing."
+  fork_env
+  command -v node >/dev/null || fail 'node not found. Install it with mise (mise use -g node@22) or nvm, then retry.'
   [ -f "$out/commit" ] || fail "Nothing packaged under $out. Run $0 first."
   commit=$(cat "$out/commit")
   app="$out/$(cat "$out/app" 2>/dev/null || true)"
@@ -145,7 +147,8 @@ if [ "$mode" = install ]; then
   embedded=$(asar_field "$app" t3codeCommitHash) || fail "Could not read the commit inside $app."
   [ -n "$embedded" ] && [ "${commit#"$embedded"}" != "$commit" ] ||
     fail "The packaged app was built from '$embedded', not $commit. Run $0 again."
-  if [ -d "$dest" ] && [ "$(asar_field "$dest" t3codeCommitHash 2>/dev/null || true)" = "$embedded" ]; then
+  if [ -d "$dest" ] && [ "$(asar_field "$dest" t3codeCommitHash 2>/dev/null || true)" = "$embedded" ] &&
+    codesign --verify --deep --strict "$dest" 2>/dev/null; then
     printf '%s is already installed at %s.\n' "$commit" "$dest"
     exit 0
   fi
