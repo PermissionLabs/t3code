@@ -61,8 +61,9 @@ resolve it there, validate, then push and open the PR the same way. A release th
 `.github/workflows` stops before pushing, because the broker refuses workflow changes; hand
 that branch to the MacBook path. For a fork-only change, open the usual agent PR.
 
-Either PR merges after a passkey approval in the broker approver, which merges through the
-GitHub pull request API so branch rules apply. Then sync the fork and check out the **exact
+Either PR merges after a passkey approval in the broker approver. The approval names the PR
+head and the current `custom/local` commit, and the broker updates `custom/local` only while it
+still points at that commit, so a branch that moved after approval is left unchanged. Then sync the fork and check out the **exact
 remote `custom/local` SHA** in a clean Apple Silicon build worktree. Select the Node version in
 the root package manifest. The builder also needs Corepack, Rust/Cargo, `jq`, and the approved
 `pl-gh-read`.
