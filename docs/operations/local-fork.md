@@ -43,14 +43,17 @@ or pushes on its own. The installed **T3 Code (Custom)** app updates in two step
 ```
 
 The first step writes only to the checkout and `release/custom`, so the installed app keeps
-running and an agent inside it can run it. Run it on the same `custom/local` commit the servers
-were built from. Only a `local-fork.sh start` dev run holds the checkout's lock; quit that one
-first. The first step stops when the checkout is dirty, not on `custom/local`, or has commits
-that `origin/custom/local` lacks, and when checks or the build fail. Signing may ask for keychain
-access to the Apple Development identity the first time.
+running and an agent inside it can run it. It builds the current `origin/custom/local` tip and
+prints its commit; compare that with the `+g<commit>` suffix of the servers' version. The steps
+take the checkout's lock while they run, and a `local-fork.sh start` dev run holds it the whole
+time, so quit a dev run first. The first step stops when the checkout is dirty, not on
+`custom/local`, or has commits that `origin/custom/local` lacks. If checks or the build fail, the
+checkout stays fast-forwarded with no package; fix the cause and run it again. Signing may ask
+for keychain access to the Apple Development identity the first time.
 
-`--install` needs the app quit because it replaces the bundle. If the new app misbehaves, quit
-it and run `t3-update.sh --rollback` to put `.prev` back. Code and data roll back separately: an
+`--install` needs the app quit because it replaces the bundle, and it installs only a package
+from that run whose commit is on `origin/custom/local`. If the new app misbehaves, quit it and
+run `t3-update.sh --rollback` to put `.prev` back. Code and data roll back separately: an
 older build may not understand a migrated database, so restore the matching
 `~/.t3-custom-backups/<time>-userdata.tgz` only with the app quit, after preserving the current
 data. Backups may contain secrets and stay local; remove old ones when no longer needed.

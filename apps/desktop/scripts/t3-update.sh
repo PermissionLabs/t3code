@@ -49,26 +49,47 @@ fail() {
 }
 . "$repo/apps/desktop/scripts/fork-env.sh"
 
+# The bundle name has parentheses: escape them, or pgrep reads a regex group and never matches.
+app_pattern="/Applications/T3 Code \(Custom\)\.app/Contents/MacOS/"
+running() {
+  local rc=0
+  pgrep -f "$app_pattern" >/dev/null || rc=$?
+  case "$rc" in 0) return 0 ;; 1) return 1 ;; *) fail "Could not check whether $product is running." ;; esac
+}
+# Same lock as local-fork.sh: held by a dev run and by every step that touches the
+# checkout's build output, the installed bundle, or the shared userdata.
+acquire() {
+  if ! mkdir "$lock" 2>/dev/null; then
+    owner=$(cat "$lock/pid" 2>/dev/null || true)
+    case "$owner" in ''|*[!0-9]*) fail "Inspect stale lock manually: $lock" ;; esac
+    kill -0 "$owner" 2>/dev/null && fail 'A local-fork.sh dev run or another update is running. Quit it and retry.'
+    rm "$lock/pid"
+    rmdir "$lock"
+    mkdir "$lock" || fail 'Another process acquired the lock.'
+  fi
+  printf '%s\n' "$$" > "$lock/pid"
+  trap 'rm -f "$lock/pid"; rmdir "$lock"' EXIT
+}
+
+mode=package
 skip_update=0
-install=0
-rollback=0
-back_to_dev=0
 for arg in "$@"; do
   case "$arg" in
     --skip-update) skip_update=1 ;;
-    --install) install=1 ;;
-    --rollback) rollback=1 ;;
-    --back-to-dev) back_to_dev=1 ;;
+    --install|--rollback|--back-to-dev)
+      [ "$mode" = package ] || fail "Use only one of --install, --rollback, --back-to-dev."
+      mode=${arg#--} ;;
     -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
     *) fail "Unknown option: $arg" ;;
   esac
 done
+[ "$mode" = package ] || [ "$skip_update" = 0 ] || fail "--skip-update only applies to packaging."
 
 # Moves the packaged app's catalog aside (never deletes it) and restores the
 # newest dev-run backup. Connections changed in the packaged app since the
 # backup are only in the moved-aside file.
-if [ "$back_to_dev" = 1 ]; then
-  pgrep -f "$product.app/Contents/MacOS/" >/dev/null && fail "$product is running. Quit it first."
+if [ "$mode" = back-to-dev ]; then
+  running && fail "$product is running. Quit it first."
   latest=$(ls -t "$catalog".bak-* 2>/dev/null | head -n 1 || true)
   if [ -z "$latest" ]; then
     printf 'No %s.bak-* backup: the packaged app never migrated, dev data is unchanged.\n' "$catalog"
@@ -82,25 +103,38 @@ if [ "$back_to_dev" = 1 ]; then
   exit 0
 fi
 
-running() { pgrep -f "$product.app/Contents/MacOS/" >/dev/null; }
-
-if [ "$install" = 1 ]; then
+installed="$state/local-fork-installed"
+if [ "$mode" = install ]; then
+  acquire
   running && fail "$product is running. Quit it (Cmd-Q) before installing."
-  app=$(find "$out" -maxdepth 2 -type d -name "$product.app" 2>/dev/null | head -n 1)
-  [ -n "$app" ] && [ -f "$out/commit" ] || fail "Nothing packaged under $out. Run $0 first."
+  [ -f "$out/commit" ] || fail "Nothing packaged under $out. Run $0 first."
+  commit=$(cat "$out/commit")
+  app="$out/$(cat "$out/app" 2>/dev/null || true)"
+  [ "$app" != "$out/" ] && [ -d "$app" ] || fail "Packaged app missing under $out. Run $0 again."
+  git merge-base --is-ancestor "$commit" refs/remotes/origin/custom/local 2>/dev/null ||
+    fail "Packaged commit $commit is not on origin/custom/local. Package an approved commit."
+  if [ -d "$dest" ] && [ "$(cat "$installed" 2>/dev/null || true)" = "$commit" ]; then
+    printf '%s is already installed at %s.\n' "$commit" "$dest"
+    exit 0
+  fi
   codesign --verify --deep --strict "$app"
   if [ -d "$data/userdata" ]; then
     [ "$(cd "$data" && pwd -P)" = "$data" ] || fail 'Custom data directory must not be a symlink.'
-    mkdir -p "$HOME/.t3-custom-backups"
-    archive="$HOME/.t3-custom-backups/$(date -u +%Y%m%dT%H%M%SZ)-userdata.tgz"
-    tar -czf "$archive" -C "$data" userdata
+    (umask 077 && mkdir -p "$HOME/.t3-custom-backups")
+    archive="$HOME/.t3-custom-backups/$(date -u +%Y%m%dT%H%M%SZ)-${commit:0:10}-userdata.tgz"
+    (umask 077 && tar -czf "$archive.partial" -C "$data" userdata)
+    mv "$archive.partial" "$archive"
     printf 'Data backup: %s\n' "$archive"
   fi
+  # Copy and verify next to the destination first, so a failed copy leaves both installed copies intact.
+  rm -rf "$dest.new"
+  ditto "$app" "$dest.new"
+  codesign --verify --deep --strict "$dest.new"
   rm -rf "$dest.prev"
   [ -e "$dest" ] && mv "$dest" "$dest.prev"
-  ditto "$app" "$dest"
-  codesign --verify --deep --strict "$dest"
-  printf 'Installed %s at %s (previous copy: %s.prev)\n' "$(cat "$out/commit")" "$dest" "$dest"
+  mv "$dest.new" "$dest"
+  printf '%s\n' "$commit" > "$installed"
+  printf 'Installed %s at %s (previous copy: %s.prev)\n' "$commit" "$dest" "$dest"
   if [ -f "$catalog" ] && ! ls "$catalog".bak-* >/dev/null 2>&1; then
     printf 'First launch migrates your connections: when macOS asks to use "Electron Safe Storage", click Allow.\n'
   fi
@@ -108,12 +142,18 @@ if [ "$install" = 1 ]; then
   exit 0
 fi
 
-if [ "$rollback" = 1 ]; then
+if [ "$mode" = rollback ]; then
+  acquire
   running && fail "$product is running. Quit it (Cmd-Q) before rolling back."
   [ -d "$dest.prev" ] || fail "No previous copy at $dest.prev."
+  codesign --verify --deep --strict "$dest.prev"
   aside="$dest.rolled-back-$(date +%Y%m%dT%H%M%S)"
   [ -e "$dest" ] && mv "$dest" "$aside"
-  mv "$dest.prev" "$dest"
+  if ! mv "$dest.prev" "$dest"; then
+    [ -e "$aside" ] && mv "$aside" "$dest"
+    fail "Could not restore $dest.prev; the current app is back in place."
+  fi
+  rm -f "$installed"
   printf 'Restored the previous app. The replaced one is at %s.\n' "$aside"
   printf 'Data was not restored. If the newer build migrated it, restore the matching %s archive with the app quit.\n' "$HOME/.t3-custom-backups/*-userdata.tgz"
   printf 'Open it: open "%s"\n' "$dest"
@@ -125,24 +165,15 @@ case "$identity" in 'Developer ID'*) fail 'Use the personal Apple Development id
 security find-identity -v -p codesigning | grep -qF "\"$identity\"" ||
   fail "Signing identity not found in the keychain: $identity"
 
+# A failed run below must not leave an older package that --install would accept.
+rm -f "$out/commit"
 if [ "$skip_update" = 0 ]; then
   apps/desktop/scripts/local-fork.sh update ||
     fail 'local-fork.sh update failed. A local-fork.sh start dev run holds its lock; quit it and retry.'
 fi
 
 [ -z "$(git status --porcelain)" ] || fail 'Commit or stash your changes before packaging.'
-
-# Same lock as local-fork.sh: the build rewrites dist folders the dev-run app loads.
-if ! mkdir "$lock" 2>/dev/null; then
-  owner=$(cat "$lock/pid" 2>/dev/null || true)
-  case "$owner" in ''|*[!0-9]*) fail "Inspect stale lock manually: $lock" ;; esac
-  kill -0 "$owner" 2>/dev/null && fail 'Custom app or maintenance is running. Quit it before packaging.'
-  rm "$lock/pid"
-  rmdir "$lock"
-  mkdir "$lock" || fail 'Another process acquired the lock.'
-fi
-printf '%s\n' "$$" > "$lock/pid"
-trap 'rm -f "$lock/pid"; rmdir "$lock"' EXIT
+acquire
 
 # The shell may run under Rosetta; build for the hardware.
 if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then arch=arm64; else arch=x64; fi
@@ -153,7 +184,7 @@ command -v node >/dev/null || fail 'node not found. Install it with mise (mise u
 command -v vp >/dev/null || fail "vp not found in $repo/node_modules/.bin. Run apps/desktop/scripts/local-fork.sh build once to install dependencies."
 command -v cargo >/dev/null || fail 'Install Rust (arch -arm64 brew install rustup; rustup default stable).'
 
-unset VITE_DEV_SERVER_URL VITE_HTTP_URL VITE_WS_URL ELECTRON_RUN_AS_NODE
+unset VITE_DEV_SERVER_URL VITE_HTTP_URL VITE_WS_URL ELECTRON_RUN_AS_NODE T3CODE_DESKTOP_SKIP_BUILD
 commit=$(git rev-parse HEAD)
 rm -rf "$out"
 printf 'Packaging %s (%s) into %s\n' "$product" "$arch" "$out"
@@ -206,5 +237,6 @@ packaged_name=$(node -e '
   fail "Packaged app name is \"$packaged_name\", expected \"$product\": it would use the \"$packaged_name Safe Storage\" keychain key. Not installing."
 printf 'Safe storage key: "%s Safe Storage" (dev run: "Electron Safe Storage")\n' "$packaged_name"
 
+printf '%s\n' "${app#"$out/"}" > "$out/app"
 printf '%s\n' "$commit" > "$out/commit"
 printf 'Packaged %s. Quit %s (Cmd-Q), then run: %s --install\n' "$commit" "$product" "$0"
