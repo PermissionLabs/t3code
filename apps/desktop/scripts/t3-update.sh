@@ -56,19 +56,47 @@ running() {
   pgrep -f "$app_pattern" >/dev/null || rc=$?
   case "$rc" in 0) return 0 ;; 1) return 1 ;; *) fail "Could not check whether $product is running." ;; esac
 }
-# Same lock as local-fork.sh: held by a dev run and by every step that touches the
-# checkout's build output, the installed bundle, or the shared userdata.
-acquire() {
-  if ! mkdir "$lock" 2>/dev/null; then
-    owner=$(cat "$lock/pid" 2>/dev/null || true)
-    case "$owner" in ''|*[!0-9]*) fail "Inspect stale lock manually: $lock" ;; esac
+# Locks are mkdir directories holding the owner's pid. The checkout lock (same as
+# local-fork.sh, also held by a dev run) guards release/custom; the shared lock in the
+# data directory guards the installed bundle and userdata across checkouts.
+held_locks=()
+release_locks() {
+  local l
+  for l in ${held_locks[@]+"${held_locks[@]}"}; do rm -f "$l/pid"; rmdir "$l" 2>/dev/null || true; done
+}
+trap release_locks EXIT
+take_lock() {
+  local l=$1 owner
+  if ! mkdir "$l" 2>/dev/null; then
+    owner=$(cat "$l/pid" 2>/dev/null || true)
+    case "$owner" in ''|*[!0-9]*) fail "Inspect stale lock manually: $l" ;; esac
     kill -0 "$owner" 2>/dev/null && fail 'A local-fork.sh dev run or another update is running. Quit it and retry.'
-    rm "$lock/pid"
-    rmdir "$lock"
-    mkdir "$lock" || fail 'Another process acquired the lock.'
+    rm "$l/pid"
+    rmdir "$l"
+    mkdir "$l" || fail 'Another process acquired the lock.'
   fi
-  printf '%s\n' "$$" > "$lock/pid"
-  trap 'rm -f "$lock/pid"; rmdir "$lock"' EXIT
+  printf '%s\n' "$$" > "$l/pid"
+  held_locks+=("$l")
+}
+take_install_lock() {
+  [ -d "$data" ] || (umask 077 && mkdir -p "$data")
+  take_lock "$data/app-install.lock"
+}
+# Reads a field of the package.json inside an app bundle's app.asar.
+asar_field() {
+  node -e '
+    const fs = require("fs");
+    const fd = fs.openSync(process.argv[1], "r");
+    const head = Buffer.alloc(16);
+    fs.readSync(fd, head, 0, 16, 0);
+    const size = head.readUInt32LE(12);
+    const json = Buffer.alloc(size);
+    fs.readSync(fd, json, 0, size, 16);
+    const entry = JSON.parse(json.toString()).files["package.json"];
+    const body = Buffer.alloc(entry.size);
+    fs.readSync(fd, body, 0, entry.size, 8 + head.readUInt32LE(4) + Number(entry.offset));
+    process.stdout.write(String(JSON.parse(body.toString())[process.argv[2]] ?? ""));
+  ' "$1/Contents/Resources/app.asar" "$2"
 }
 
 mode=package
@@ -103,9 +131,9 @@ if [ "$mode" = back-to-dev ]; then
   exit 0
 fi
 
-installed="$state/local-fork-installed"
 if [ "$mode" = install ]; then
-  acquire
+  take_lock "$lock"
+  take_install_lock
   running && fail "$product is running. Quit it (Cmd-Q) before installing."
   [ -f "$out/commit" ] || fail "Nothing packaged under $out. Run $0 first."
   commit=$(cat "$out/commit")
@@ -113,11 +141,14 @@ if [ "$mode" = install ]; then
   [ "$app" != "$out/" ] && [ -d "$app" ] || fail "Packaged app missing under $out. Run $0 again."
   git merge-base --is-ancestor "$commit" refs/remotes/origin/custom/local 2>/dev/null ||
     fail "Packaged commit $commit is not on origin/custom/local. Package an approved commit."
-  if [ -d "$dest" ] && [ "$(cat "$installed" 2>/dev/null || true)" = "$commit" ]; then
+  codesign --verify --deep --strict "$app"
+  embedded=$(asar_field "$app" t3codeCommitHash) || fail "Could not read the commit inside $app."
+  [ -n "$embedded" ] && [ "${commit#"$embedded"}" != "$commit" ] ||
+    fail "The packaged app was built from '$embedded', not $commit. Run $0 again."
+  if [ -d "$dest" ] && [ "$(asar_field "$dest" t3codeCommitHash 2>/dev/null || true)" = "$embedded" ]; then
     printf '%s is already installed at %s.\n' "$commit" "$dest"
     exit 0
   fi
-  codesign --verify --deep --strict "$app"
   if [ -d "$data/userdata" ]; then
     [ "$(cd "$data" && pwd -P)" = "$data" ] || fail 'Custom data directory must not be a symlink.'
     (umask 077 && mkdir -p "$HOME/.t3-custom-backups")
@@ -126,14 +157,22 @@ if [ "$mode" = install ]; then
     mv "$archive.partial" "$archive"
     printf 'Data backup: %s\n' "$archive"
   fi
-  # Copy and verify next to the destination first, so a failed copy leaves both installed copies intact.
-  rm -rf "$dest.new"
+  # Copy and verify next to the destination first, and keep the older .prev until the new
+  # app is in place, so any failed step leaves a working app at the launch path.
+  rm -rf "$dest.new" "$dest.prev.old"
   ditto "$app" "$dest.new"
   codesign --verify --deep --strict "$dest.new"
-  rm -rf "$dest.prev"
-  [ -e "$dest" ] && mv "$dest" "$dest.prev"
-  mv "$dest.new" "$dest"
-  printf '%s\n' "$commit" > "$installed"
+  [ -e "$dest.prev" ] && mv "$dest.prev" "$dest.prev.old"
+  if [ -e "$dest" ] && ! mv "$dest" "$dest.prev"; then
+    [ -e "$dest.prev.old" ] && mv "$dest.prev.old" "$dest.prev"
+    fail "Could not move the current app aside; nothing was replaced."
+  fi
+  if ! mv "$dest.new" "$dest"; then
+    [ -e "$dest.prev" ] && mv "$dest.prev" "$dest"
+    [ -e "$dest.prev.old" ] && mv "$dest.prev.old" "$dest.prev"
+    fail "Could not put the new app in place; the current app is back."
+  fi
+  rm -rf "$dest.prev.old"
   printf 'Installed %s at %s (previous copy: %s.prev)\n' "$commit" "$dest" "$dest"
   if [ -f "$catalog" ] && ! ls "$catalog".bak-* >/dev/null 2>&1; then
     printf 'First launch migrates your connections: when macOS asks to use "Electron Safe Storage", click Allow.\n'
@@ -143,7 +182,7 @@ if [ "$mode" = install ]; then
 fi
 
 if [ "$mode" = rollback ]; then
-  acquire
+  take_install_lock
   running && fail "$product is running. Quit it (Cmd-Q) before rolling back."
   [ -d "$dest.prev" ] || fail "No previous copy at $dest.prev."
   codesign --verify --deep --strict "$dest.prev"
@@ -153,27 +192,27 @@ if [ "$mode" = rollback ]; then
     [ -e "$aside" ] && mv "$aside" "$dest"
     fail "Could not restore $dest.prev; the current app is back in place."
   fi
-  rm -f "$installed"
   printf 'Restored the previous app. The replaced one is at %s.\n' "$aside"
   printf 'Data was not restored. If the newer build migrated it, restore the matching %s archive with the app quit.\n' "$HOME/.t3-custom-backups/*-userdata.tgz"
   printf 'Open it: open "%s"\n' "$dest"
   exit 0
 fi
 
+# Held from here through publishing, so an install never reads a half-written package.
+take_lock "$lock"
+# A failed run below must not leave an older package that --install would accept.
+rm -f "$out/commit"
 [ "$(uname -s)" = Darwin ] || fail 'macOS only.'
 case "$identity" in 'Developer ID'*) fail 'Use the personal Apple Development identity, not a Developer ID.' ;; esac
 security find-identity -v -p codesigning | grep -qF "\"$identity\"" ||
   fail "Signing identity not found in the keychain: $identity"
 
-# A failed run below must not leave an older package that --install would accept.
-rm -f "$out/commit"
 if [ "$skip_update" = 0 ]; then
-  apps/desktop/scripts/local-fork.sh update ||
-    fail 'local-fork.sh update failed. A local-fork.sh start dev run holds its lock; quit it and retry.'
+  LOCAL_FORK_LOCK_OWNER=$$ apps/desktop/scripts/local-fork.sh update ||
+    fail 'local-fork.sh update failed; see the message above.'
 fi
 
 [ -z "$(git status --porcelain)" ] || fail 'Commit or stash your changes before packaging.'
-acquire
 
 # The shell may run under Rosetta; build for the hardware.
 if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then arch=arm64; else arch=x64; fi
@@ -219,20 +258,9 @@ printf 'LSEnvironment: T3CODE_HOME=%s\n' "$data"
 # Electron names the safe storage keychain key "<app name> Safe Storage" from
 # app.asar's package.json (productName, else name). The fork must not fall back
 # to "t3code": that is the official app's key.
-packaged_name=$(node -e '
-  const fs = require("fs");
-  const fd = fs.openSync(process.argv[1], "r");
-  const head = Buffer.alloc(16);
-  fs.readSync(fd, head, 0, 16, 0);
-  const size = head.readUInt32LE(12);
-  const json = Buffer.alloc(size);
-  fs.readSync(fd, json, 0, size, 16);
-  const entry = JSON.parse(json.toString()).files["package.json"];
-  const body = Buffer.alloc(entry.size);
-  fs.readSync(fd, body, 0, entry.size, 8 + head.readUInt32LE(4) + Number(entry.offset));
-  const pkg = JSON.parse(body.toString());
-  process.stdout.write(pkg.productName || pkg.name);
-' "$app/Contents/Resources/app.asar") || fail "Could not read the app name from $app/Contents/Resources/app.asar"
+packaged_name=$(asar_field "$app" productName) || fail "Could not read the app name from $app/Contents/Resources/app.asar"
+embedded=$(asar_field "$app" t3codeCommitHash) || fail "Could not read the commit from $app/Contents/Resources/app.asar"
+[ -n "$embedded" ] && [ "${commit#"$embedded"}" != "$commit" ] || fail "Packaged app was built from '$embedded', not $commit."
 [ "$packaged_name" = "$product" ] ||
   fail "Packaged app name is \"$packaged_name\", expected \"$product\": it would use the \"$packaged_name Safe Storage\" keychain key. Not installing."
 printf 'Safe storage key: "%s Safe Storage" (dev run: "Electron Safe Storage")\n' "$packaged_name"

@@ -18,6 +18,10 @@ clean() {
   [ -z "$(git status --porcelain)" ] || fail 'Commit or stash your changes before continuing.'
 }
 acquire() {
+  # t3-update.sh holds the lock across its whole run and passes its pid.
+  if [ -n "${LOCAL_FORK_LOCK_OWNER:-}" ] && [ "$(cat "$lock/pid" 2>/dev/null || true)" = "$LOCAL_FORK_LOCK_OWNER" ]; then
+    return 0
+  fi
   if ! mkdir "$lock" 2>/dev/null; then
     owner=$(cat "$lock/pid" 2>/dev/null || true)
     case "$owner" in ''|*[!0-9]*) fail "Inspect stale lock manually: $lock" ;; esac
