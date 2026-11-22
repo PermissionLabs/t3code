@@ -6,9 +6,13 @@
 # every time. The app carries the fork environment in LSEnvironment, so Finder
 # and Dock launches use the same data directory as local-fork.sh start.
 #
-# Usage: apps/desktop/scripts/t3-update.sh [--skip-update] [--install] | --back-to-dev
-#   --skip-update  do not run local-fork.sh update first
-#   --install      replace /Applications/T3 Code (Custom).app (keeps .prev)
+# Usage: apps/desktop/scripts/t3-update.sh [--skip-update] | --install | --rollback | --back-to-dev
+#   (default)      local-fork.sh update, then package and sign into release/custom.
+#                  The installed app keeps running, so an agent inside it can do this.
+#   --skip-update  package the current checkout without local-fork.sh update
+#   --install      with the app quit: back up userdata, then replace
+#                  /Applications/T3 Code (Custom).app with the packaged one (keeps .prev)
+#   --rollback     with the app quit: put .prev back (data is not restored)
 #   --back-to-dev  restore the dev-run connection catalog backup, then print
 #                  how to start the dev-run app again
 #
@@ -47,13 +51,15 @@ fail() {
 
 skip_update=0
 install=0
+rollback=0
 back_to_dev=0
 for arg in "$@"; do
   case "$arg" in
     --skip-update) skip_update=1 ;;
     --install) install=1 ;;
+    --rollback) rollback=1 ;;
     --back-to-dev) back_to_dev=1 ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
     *) fail "Unknown option: $arg" ;;
   esac
 done
@@ -76,6 +82,44 @@ if [ "$back_to_dev" = 1 ]; then
   exit 0
 fi
 
+running() { pgrep -f "$product.app/Contents/MacOS/" >/dev/null; }
+
+if [ "$install" = 1 ]; then
+  running && fail "$product is running. Quit it (Cmd-Q) before installing."
+  app=$(find "$out" -maxdepth 2 -type d -name "$product.app" 2>/dev/null | head -n 1)
+  [ -n "$app" ] && [ -f "$out/commit" ] || fail "Nothing packaged under $out. Run $0 first."
+  codesign --verify --deep --strict "$app"
+  if [ -d "$data/userdata" ]; then
+    [ "$(cd "$data" && pwd -P)" = "$data" ] || fail 'Custom data directory must not be a symlink.'
+    mkdir -p "$HOME/.t3-custom-backups"
+    archive="$HOME/.t3-custom-backups/$(date -u +%Y%m%dT%H%M%SZ)-userdata.tgz"
+    tar -czf "$archive" -C "$data" userdata
+    printf 'Data backup: %s\n' "$archive"
+  fi
+  rm -rf "$dest.prev"
+  [ -e "$dest" ] && mv "$dest" "$dest.prev"
+  ditto "$app" "$dest"
+  codesign --verify --deep --strict "$dest"
+  printf 'Installed %s at %s (previous copy: %s.prev)\n' "$(cat "$out/commit")" "$dest" "$dest"
+  if [ -f "$catalog" ] && ! ls "$catalog".bak-* >/dev/null 2>&1; then
+    printf 'First launch migrates your connections: when macOS asks to use "Electron Safe Storage", click Allow.\n'
+  fi
+  printf 'Open it: open "%s"\nIf it misbehaves, quit it and run: %s --rollback\n' "$dest" "$0"
+  exit 0
+fi
+
+if [ "$rollback" = 1 ]; then
+  running && fail "$product is running. Quit it (Cmd-Q) before rolling back."
+  [ -d "$dest.prev" ] || fail "No previous copy at $dest.prev."
+  aside="$dest.rolled-back-$(date +%Y%m%dT%H%M%S)"
+  [ -e "$dest" ] && mv "$dest" "$aside"
+  mv "$dest.prev" "$dest"
+  printf 'Restored the previous app. The replaced one is at %s.\n' "$aside"
+  printf 'Data was not restored. If the newer build migrated it, restore the matching %s archive with the app quit.\n' "$HOME/.t3-custom-backups/*-userdata.tgz"
+  printf 'Open it: open "%s"\n' "$dest"
+  exit 0
+fi
+
 [ "$(uname -s)" = Darwin ] || fail 'macOS only.'
 case "$identity" in 'Developer ID'*) fail 'Use the personal Apple Development identity, not a Developer ID.' ;; esac
 security find-identity -v -p codesigning | grep -qF "\"$identity\"" ||
@@ -83,7 +127,7 @@ security find-identity -v -p codesigning | grep -qF "\"$identity\"" ||
 
 if [ "$skip_update" = 0 ]; then
   apps/desktop/scripts/local-fork.sh update ||
-    fail 'local-fork.sh update failed. If the custom app is running, quit it and retry, or pass --skip-update.'
+    fail 'local-fork.sh update failed. A local-fork.sh start dev run holds its lock; quit it and retry.'
 fi
 
 [ -z "$(git status --porcelain)" ] || fail 'Commit or stash your changes before packaging.'
@@ -110,6 +154,7 @@ command -v vp >/dev/null || fail "vp not found in $repo/node_modules/.bin. Run a
 command -v cargo >/dev/null || fail 'Install Rust (arch -arm64 brew install rustup; rustup default stable).'
 
 unset VITE_DEV_SERVER_URL VITE_HTTP_URL VITE_WS_URL ELECTRON_RUN_AS_NODE
+commit=$(git rev-parse HEAD)
 rm -rf "$out"
 printf 'Packaging %s (%s) into %s\n' "$product" "$arch" "$out"
 env \
@@ -119,7 +164,7 @@ env \
   T3CODE_HOME="$data" \
   T3CODE_DISABLE_AUTO_UPDATE=true \
   T3CODE_DESKTOP_SIGNED=false \
-  T3CODE_COMMIT_HASH="$(git rev-parse HEAD)" \
+  T3CODE_COMMIT_HASH="$commit" \
   node scripts/build-desktop-artifact.ts --platform mac --target dir --arch "$arch" --output-dir "$out"
 
 app=$(find "$out" -maxdepth 2 -type d -name "$product.app" | head -n 1)
@@ -161,16 +206,5 @@ packaged_name=$(node -e '
   fail "Packaged app name is \"$packaged_name\", expected \"$product\": it would use the \"$packaged_name Safe Storage\" keychain key. Not installing."
 printf 'Safe storage key: "%s Safe Storage" (dev run: "Electron Safe Storage")\n' "$packaged_name"
 
-if [ "$install" = 1 ]; then
-  pgrep -f "$product.app/Contents/MacOS/" >/dev/null && fail "$product is running. Quit it before installing."
-  rm -rf "$dest.prev"
-  [ -e "$dest" ] && mv "$dest" "$dest.prev"
-  ditto "$app" "$dest"
-  codesign --verify --deep --strict "$dest"
-  printf 'Installed: %s (previous copy: %s.prev)\n' "$dest" "$dest"
-  printf 'Quit the dev-run app first (both use %s), then open it with: open "%s"\n' "$data" "$dest"
-  if [ -f "$catalog" ] && ! ls "$catalog".bak-* >/dev/null 2>&1; then
-    printf 'First launch migrates your connections: when macOS asks to use "Electron Safe Storage", click Allow.\n'
-  fi
-  printf 'If the window is empty, quit it and go back to the dev run:\n  %s --back-to-dev\n' "$0"
-fi
+printf '%s\n' "$commit" > "$out/commit"
+printf 'Packaged %s. Quit %s (Cmd-Q), then run: %s --install\n' "$commit" "$product" "$0"

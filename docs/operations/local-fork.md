@@ -31,24 +31,34 @@ The macOS bundle is labeled **T3 Code (Custom)**, uses `com.bamnenim.t3code.cust
 - The old temporary Dev preview is a separate environment. Its conversations have not been migrated.
 - GitHub contains source only. Runtime state, provider credentials, logs, dependencies, and generated bundles are not committed.
 
-## Update while keeping customization
+## Update the desktop app
 
-Quit Custom, commit any intentional source edits on `custom/local`, then run:
+`custom/local` changes only through broker PRs (next section), so a desktop checkout never merges
+or pushes on its own. The installed **T3 Code (Custom)** app updates in two steps:
 
 ```sh
-./apps/desktop/scripts/local-fork.sh update
-./apps/desktop/scripts/local-fork.sh start
+./apps/desktop/scripts/t3-update.sh             # fast-forward to origin/custom/local, check, build, package, sign
+# quit the app with Cmd-Q, then:
+./apps/desktop/scripts/t3-update.sh --install   # back up userdata, replace the app, keep the old one as .prev
 ```
 
-`update` fetches the latest official **stable release** (a plain `vX.Y.Z` tag, never nightly or preview), fast-forwards from the fork's `custom/local`, creates a local `backup/local-<timestamp>` branch and (when present) a private local data archive in `~/.t3-custom-backups`, merges that release, installs locked dependencies, runs changed-file checks, builds, and pushes only `custom/local` to the fork. This keeps the fork on the same release train as stable servers on other machines. To move to a newer release, wait for the next stable tag. This is an explicit update command, not an unattended schedule.
+The first step writes only to the checkout and `release/custom`, so the installed app keeps
+running and an agent inside it can run it. Run it on the same `custom/local` commit the servers
+were built from. Only a `local-fork.sh start` dev run holds the checkout's lock; quit that one
+first. The first step stops when the checkout is dirty, not on `custom/local`, or has commits
+that `origin/custom/local` lacks, and when checks or the build fail. Signing may ask for keychain
+access to the Apple Development identity the first time.
 
-The app and update/build command share a lock. Dirty worktrees, merge conflicts, or failed checks/builds stop the process. A build marker prevents launching a revision whose build failed. No force-push or automatic conflict resolution is used. Local merge commits are unsigned so updates do not require personal signing-key access.
+`--install` needs the app quit because it replaces the bundle. If the new app misbehaves, quit
+it and run `t3-update.sh --rollback` to put `.prev` back. Code and data roll back separately: an
+older build may not understand a migrated database, so restore the matching
+`~/.t3-custom-backups/<time>-userdata.tgz` only with the app quit, after preserving the current
+data. Backups may contain secrets and stay local; remove old ones when no longer needed.
 
-If a merge conflicts, resolve it and commit, then run `./apps/desktop/scripts/local-fork.sh build` and `git push origin custom/local`. To abandon an unfinished merge, run `git merge --abort`, then build again.
-
-If a completed update is unsuitable, inspect the recovery branch named in `.git/local-fork-backup`. Preserve any new edits and ask an agent to recover onto a new branch; do not blindly reset the shared custom branch. Code rollback and database rollback are separate: an older build may not understand a migrated database. Restore the matching data archive only with the app stopped, after preserving the current data. Backups may contain secrets and stay local; review disk usage and remove old backups when no longer needed.
-
-`./apps/desktop/scripts/local-fork.sh status` reports the checkout, last built commit, and the stable release it is based on. Future modifications should stay on small branches based on `custom/local` and merge back after verification. Keep changes narrowly scoped to reduce upstream conflicts. If the official product eventually covers the same need, remove the redundant local patch.
+For a dev run, `./apps/desktop/scripts/local-fork.sh update` does the same fast-forward, check,
+and build without packaging; then use `local-fork.sh start`. `local-fork.sh status` reports the
+checkout, last built commit, and the stable release it is based on. Each update also leaves a
+`backup/local-<time>` branch named in `.git/local-fork-backup`.
 
 ## Build a shared server release
 
@@ -88,10 +98,12 @@ configuration.
 
 ## Roll out to the machines
 
-The first build with rollout support is installed on each machine by hand. After that, open
+The first build with rollout support is installed on each mini by hand. After that, open
 **Settings → About → Fork server rollout** on mini-1, paste the exact published version, and
-select mini-1, mini-2, and the MacBook in that order. mini-1 drives the rollout through its
-linked environments (**Settings → Connections**). Link mini-2 and the MacBook to mini-1 with
+select mini-1 and mini-2 in that order. The MacBook runs the desktop app, whose server belongs
+to the app and refuses remote updates; update it with `t3-update.sh` on the same commit (see
+[Update the desktop app](#update-the-desktop-app)). mini-1 drives the rollout through its
+linked environments (**Settings → Connections**). Link mini-2 to mini-1 with
 **Full access**: each server accepts update requests only from a full-access link. The rollout
 state lives in `fork-rollout.json` under mini-1's T3 home, so it continues after the page
 closes and resumes once mini-1 is back on the new version and its launcher has committed it.
