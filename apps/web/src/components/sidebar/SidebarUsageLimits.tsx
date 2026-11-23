@@ -22,6 +22,7 @@ import { providerClients } from "../settings/providerDriverMeta";
 import { Button } from "../ui/button";
 import { useSidebar } from "../ui/sidebar";
 import { readUsagePagePreferences, saveUsagePagePreferences } from "../usage/usagePagePreferences";
+import { useSidebarUsageLimitsHeight } from "./useSidebarUsageLimitsHeight";
 
 export function SidebarUsageLimits() {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
@@ -30,6 +31,8 @@ export function SidebarUsageLimits() {
   const navigate = useNavigate();
   const { isMobile, setOpenMobile } = useSidebar();
   const [refreshFailed, setRefreshFailed] = useState(false);
+  const { listRef, maxHeight, minHeight, maxHeightLimit, handleProps } =
+    useSidebarUsageLimitsHeight();
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -81,13 +84,34 @@ export function SidebarUsageLimits() {
   return (
     <section
       aria-label="Subscription limits"
-      className="min-w-0 border-t border-sidebar-border pt-2"
+      className="relative min-w-0 border-t border-sidebar-border pt-2"
     >
+      <div
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize subscription limits"
+        aria-valuenow={maxHeight}
+        aria-valuemin={minHeight}
+        aria-valuemax={maxHeightLimit}
+        tabIndex={0}
+        className="group absolute inset-x-0 -top-1.5 z-20 h-3 cursor-row-resize select-none touch-none focus-visible:outline-none"
+        {...handleProps}
+      >
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 top-1/2 h-[2px] -translate-y-1/2 rounded-full bg-transparent transition-colors duration-150 group-hover:bg-sidebar-foreground/25 group-focus-visible:bg-primary/60 group-active:bg-primary/60 group-data-[dragging=true]:bg-primary/60"
+        />
+      </div>
       <div className="mb-1 flex items-center justify-between px-2 text-2xs text-muted-foreground">
         <span>Limits · all environments</span>
         {offlineCount > 0 ? <span>{offlineCount} offline</span> : null}
       </div>
-      <div className="flex max-h-40 flex-col gap-1 overflow-y-auto">
+      <div
+        ref={listRef}
+        data-slot="sidebar-usage-limits-list"
+        className="flex flex-col gap-1 overflow-y-auto"
+        style={{ maxHeight: `${maxHeight}px` }}
+      >
         {pools.map((pool) => {
           const label = providerClients.get(pool.driver)?.label ?? String(pool.driver);
           const windows = displayLimitWindows(pool);
