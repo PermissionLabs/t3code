@@ -1437,19 +1437,15 @@ export const make = Effect.gen(function* () {
       const homes: Array<{ homePath: string; providerInstanceId: ProviderInstanceId }> = [];
       const seenHomes = new Set<string>();
       for (const { instanceId, config: instance } of instances) {
-        const environmentHome = (name: "CLAUDE_CONFIG_DIR" | "CODEX_HOME") => {
-          const configured = instance.environment?.findLast(
-            (variable) => variable.name === name,
-          )?.value;
-          return typeof configured === "string" ? configured : hostEnvironment[name];
-        };
+        // The provider's own merge, so unset rows (exact or prefix) and row order apply here too.
+        const environment = yield* mergeProviderInstanceEnvironment(
+          instance.environment,
+          hostEnvironment,
+        ).pipe(Effect.provideService(HostProcess.HomeDirectory, homeDir));
+        const environmentHome = (name: "CLAUDE_CONFIG_DIR" | "CODEX_HOME") => environment[name];
 
         let homePath: string;
         if (source === "pi") {
-          const environment = yield* mergeProviderInstanceEnvironment(
-            instance.environment,
-            hostEnvironment,
-          ).pipe(Effect.provideService(HostProcess.HomeDirectory, homeDir));
           homePath = resolvePiSessionsDir(environment, homeDir, path);
         } else if (source === "claudeAgent") {
           const config = decodeClaudeSettings(instance.config ?? {});

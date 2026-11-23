@@ -66,7 +66,10 @@ import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as ServerConfig from "../config.ts";
-import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import {
+  mergeProviderInstanceEnvironment,
+  providerInstanceUnsetNames,
+} from "@t3tools/provider-core/server/instanceEnvironment";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome.ts";
 import { deriveProviderInstanceConfigMap } from "../provider/ProviderInstanceRegistryHydration.ts";
@@ -116,6 +119,13 @@ const DEFAULT_OPEN_COLS = 120;
 const DEFAULT_OPEN_ROWS = 30;
 // The tmux/screen/Zellij keys name the multiplexer pane that launched the server,
 // so inheriting them points multiplexer-aware tools at that unrelated pane.
+/** A terminal's launch variables; null removes an inherited variable a provider instance unsets. */
+type TerminalLaunchEnv = Readonly<Record<string, string | null>>;
+type WithTerminalLaunchEnv<Input extends { readonly env?: unknown }> = Omit<Input, "env"> & {
+  readonly env?: TerminalLaunchEnv | undefined;
+};
+type ResolvedTerminalOpenInput = WithTerminalLaunchEnv<TerminalOpenInput>;
+
 const TERMINAL_ENV_BLOCKLIST = new Set([
   "PORT",
   "ELECTRON_RENDERER_PORT",
@@ -310,7 +320,7 @@ interface TerminalSessionState {
   unsubscribeExit: (() => void) | null;
   hasRunningSubprocess: boolean;
   childCommandLabel: string | null;
-  runtimeEnv: Record<string, string> | null;
+  runtimeEnv: TerminalLaunchEnv | null;
   stopOnSettle: boolean;
 }
 
@@ -1360,7 +1370,7 @@ function stripAppImageRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 function createTerminalSpawnEnv(
   baseEnv: NodeJS.ProcessEnv,
-  runtimeEnv: Record<string, string> | null | undefined,
+  runtimeEnv: TerminalLaunchEnv | null | undefined,
   platform: NodeJS.Platform,
   home: string,
 ): NodeJS.ProcessEnv {
@@ -1371,7 +1381,17 @@ function createTerminalSpawnEnv(
     spawnEnv[key] = value;
   }
   if (runtimeEnv) {
+    // Removals first, so on Windows a value set under another spelling of the name survives.
     for (const [key, value] of Object.entries(runtimeEnv)) {
+      if (value !== null) continue;
+      for (const candidate of Object.keys(spawnEnv)) {
+        const same =
+          platform === "win32" ? candidate.toLowerCase() === key.toLowerCase() : candidate === key;
+        if (same) delete spawnEnv[candidate];
+      }
+    }
+    for (const [key, value] of Object.entries(runtimeEnv)) {
+      if (value === null) continue;
       const existingKey =
         platform === "win32"
           ? Object.keys(spawnEnv).find((candidate) => candidate.toLowerCase() === key.toLowerCase())
@@ -1397,9 +1417,7 @@ function createTerminalSpawnEnv(
   return stripAppImageRuntimeEnv(spawnEnv);
 }
 
-function normalizedRuntimeEnv(
-  env: Record<string, string> | undefined,
-): Record<string, string> | null {
+function normalizedRuntimeEnv(env: TerminalLaunchEnv | undefined): TerminalLaunchEnv | null {
   if (!env) return null;
   const entries = Object.entries(env);
   if (entries.length === 0) return null;
@@ -1436,7 +1454,7 @@ interface TerminalManagerOptions {
     providerInstanceId: string,
     env: Record<string, string> | undefined,
   ) => Effect.Effect<
-    Record<string, string>,
+    TerminalLaunchEnv,
     TerminalProviderInstanceNotFoundError | TerminalProviderEnvironmentError
   >;
 }
@@ -1448,6 +1466,8 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
   readonly path: Path.Path;
   readonly rawProviderInstanceId: string;
   readonly env: Record<string, string> | undefined;
+  /** The environment terminals inherit, which a prefix unset entry matches against. */
+  readonly hostEnv?: NodeJS.ProcessEnv | undefined;
 }) {
   const providerInstanceId = ProviderInstanceId.make(input.rawProviderInstanceId);
   const settings = yield* input.serverSettings.getSettings.pipe(
@@ -1477,9 +1497,20 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
     }
   }
 
-  return Object.fromEntries(
-    Object.entries(resolved).filter((entry): entry is [string, string] => entry[1] !== undefined),
-  );
+  // A name the instance unsets stays as null, so the spawn also drops the inherited value.
+  const launchEnv: Record<string, string | null> = {};
+  for (const [name, value] of Object.entries(resolved)) {
+    launchEnv[name] = value ?? null;
+  }
+  const windows = (yield* HostProcess.Platform) === "win32";
+  const hostEnv = input.hostEnv ?? (yield* HostProcess.Environment);
+  for (const variable of instance.environment ?? []) {
+    if (variable.unset !== "prefix") continue;
+    for (const name of providerInstanceUnsetNames(variable, hostEnv, windows)) {
+      if (!(name in launchEnv)) launchEnv[name] = null;
+    }
+  }
+  return launchEnv;
 });
 
 /** @public */
@@ -1539,7 +1570,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     function* <Input extends TerminalOpenInput | TerminalAttachInput>(
       input: Input,
     ): Effect.fn.Return<
-      Input,
+      WithTerminalLaunchEnv<Input>,
       TerminalProviderInstanceNotFoundError | TerminalProviderEnvironmentError
     > {
       if (input.providerInstanceId === undefined) return input;
@@ -2836,7 +2867,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   );
 
   const openWithWorkspaceLease = Effect.fn("terminal.openLocked")(function* (
-    requestedInput: TerminalOpenInput,
+    requestedInput: ResolvedTerminalOpenInput,
   ) {
     const terminalId = requestedInput.terminalId;
     yield* assertValidCwd(requestedInput.cwd);
@@ -2966,7 +2997,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     return snapshot(liveSession);
   });
 
-  const openLocked = (input: TerminalOpenInput) =>
+  const openLocked = (input: ResolvedTerminalOpenInput) =>
     withWorkspaceLease(
       path.resolve(input.worktreePath ?? input.cwd),
       openWithWorkspaceLease(input),

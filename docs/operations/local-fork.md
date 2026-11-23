@@ -119,3 +119,17 @@ fails. A step finishes when that server reports the requested version; a failed 
 step stops the rollout before the next machine. **Stop rollout** cancels a step that is still
 waiting for idle; when that server cannot be reached, the step says so, because it may still
 restart once idle. The custom desktop app uses the separately signed desktop build.
+
+## Fork-only changes
+
+- **Unset entries in provider environment variables.** A provider instance's environment row can carry `"unset": "exact"` or `"unset": "prefix"` to remove inherited variables instead of setting one, so a machine can keep human credential paths (`SSH_AUTH_SOCK`, `GIT_ASKPASS`, `OP_*`, …) away from agents without changing the server's own environment or T3 Code's own git. In `settings.json`, a Claude instance looks like this:
+
+  ```json
+  "environment": [
+    { "name": "SSH_AUTH_SOCK", "unset": "exact" },
+    { "name": "OP_", "unset": "prefix" },
+    { "name": "GIT_CONFIG_GLOBAL", "value": "/path/to/agent.gitconfig" }
+  ]
+  ```
+
+  Rows apply in order, so a later row wins over an earlier one. Name each credential variable in an exact row: a prefix row matches the names present when the provider starts, so a variable the desktop shell probe adds later can still reach a probe that merges the server environment back in. A policy-locked variable still wins over an unset row, and a policy with `maxRuntimeMode` drops the instance's own rows, unset rows included. Builds without this change read an unset row as an empty value: an exact row then gives an empty variable, but a prefix row removes nothing, and saving settings from such a build drops the `unset` key.

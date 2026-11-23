@@ -29,11 +29,20 @@ export const ProviderInstanceEnvironmentVariableName = TrimmedNonEmptyString.che
 export type ProviderInstanceEnvironmentVariableName =
   typeof ProviderInstanceEnvironmentVariableName.Type;
 
+/**
+ * Removes inherited variables instead of setting one. `exact` removes `name`; `prefix` removes
+ * every inherited variable whose name starts with `name` (e.g. `OP_`). The value is ignored.
+ * An older server ignores the key and sets the variable to an empty string.
+ */
+export const ProviderInstanceEnvironmentUnset = Schema.Literals(["exact", "prefix"]);
+export type ProviderInstanceEnvironmentUnset = typeof ProviderInstanceEnvironmentUnset.Type;
+
 const ProviderInstanceEnvironmentVariableValue = Schema.Struct({
   name: ProviderInstanceEnvironmentVariableName,
   value: Schema.Union([Schema.String, SecretReference]),
   sensitive: Schema.Boolean,
   valueRedacted: Schema.optionalKey(Schema.Boolean),
+  unset: Schema.optionalKey(ProviderInstanceEnvironmentUnset),
 });
 
 // A reference is encoded beside an empty value so older servers and clients still decode it.
@@ -42,6 +51,7 @@ const StoredProviderInstanceEnvironmentVariable = Schema.Struct({
   value: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   sensitive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   valueRedacted: Schema.optionalKey(Schema.Boolean),
+  unset: Schema.optionalKey(ProviderInstanceEnvironmentUnset),
   secret: Schema.optionalKey(SecretReference),
 });
 
@@ -52,8 +62,11 @@ export const ProviderInstanceEnvironmentVariable = StoredProviderInstanceEnviron
       typeof ProviderInstanceEnvironmentVariableValue.Type,
       typeof StoredProviderInstanceEnvironmentVariable.Type
     >({
+      // An unset entry has no value to read, so a stray reference on it is dropped.
       decode: ({ secret, ...variable }) =>
-        secret === undefined ? variable : { ...variable, value: secret, sensitive: true },
+        secret === undefined || variable.unset !== undefined
+          ? variable
+          : { ...variable, value: secret, sensitive: true },
       encode: ({ value, ...variable }) =>
         typeof value === "string"
           ? { ...variable, value }

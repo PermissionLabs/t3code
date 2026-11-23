@@ -40,6 +40,15 @@ state. Claude does not have Codex's shared-home and shadow-home arrangement.
 For presets that differ only in API keys or endpoints, use the instance's
 **Environment variables**. Variable assignments do not belong in **Launch arguments**.
 
+A variable row can also remove a variable the provider would otherwise inherit from the
+T3 Code server. Press the eraser button on the row once to remove that exact name, and again
+to remove every inherited name that starts with it (for example `OP_`). The removal applies to
+the provider's sessions, including resumed and delegated threads, and to terminals opened for
+that provider. It works the same for Codex and other providers that run as their own process,
+but not for Cursor, whose agent runs inside the server. T3 Code's own git commands
+still use the server's environment. Claude Code can put a removed variable back from an `env`
+block in its settings or from a SessionStart hook that writes `CLAUDE_ENV_FILE`.
+
 Claude Code's verbose mode can stay enabled when you use Claude for text generation, including
 thread titles, branch names, commit messages, and pull request descriptions. On a remote connection,
 T3 Code uses the Claude configuration on the connected server.

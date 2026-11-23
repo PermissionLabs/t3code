@@ -208,6 +208,7 @@ const sameVariable = (
     right !== undefined &&
     // A secret reference is an object, and a decoded copy is never the stored one.
     sameValue(left.value, right.value) &&
+    left.unset === right.unset &&
     left.sensitive === right.sensitive);
 
 const pinnedFields = (pin: ManagedProviderInstance): ReadonlyArray<PinnedConfigField> =>
@@ -269,6 +270,26 @@ const overlayInstance = (
     }
     for (const pinned of pinnedEnvironment) {
       if (!seen.has(variableKey(pinned.name))) environment.push(pinned);
+    }
+    // A later prefix unset entry would remove a locked value, so that value moves after it.
+    if (rule.environment === "locked") {
+      const removedLater = (index: number) =>
+        environment
+          .slice(index + 1)
+          .some(
+            (variable) =>
+              variable.unset === "prefix" &&
+              variableKey(environment[index]!.name).startsWith(variableKey(variable.name)),
+          );
+      const moved = environment.filter(
+        (variable, index) =>
+          pinnedByName.get(variableKey(variable.name)) === variable && removedLater(index),
+      );
+      if (moved.length > 0) {
+        const kept = environment.filter((variable) => !moved.includes(variable));
+        environment.length = 0;
+        environment.push(...kept, ...moved);
+      }
     }
   }
   const { config: _config, environment: _environment, ...envelope } = instance;
@@ -429,6 +450,7 @@ export function makeManagedProviders(
       (stored?.environment ?? []).some((existing) => sameVariable(variable, existing));
     const echoed = (variable: ProviderInstanceEnvironmentVariable) =>
       !variable.sensitive &&
+      variable.unset === undefined &&
       pinned.some((pin) => pin.name === variable.name && pin.value === variable.value);
     if (rule.environment === "all") {
       // Only the pinned variables were shown, so the user's own stay as stored.
