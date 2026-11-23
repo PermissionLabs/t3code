@@ -310,26 +310,88 @@ it.layer(NodeServices.layer)("buildAntigravityPrompt", (it) => {
     }),
   );
 
-  it.effect("keeps folded clipboard text out of native context", () =>
-    Effect.gen(function* () {
-      const fixture = yield* makeAttachmentFixture();
-      const pastedText = {
-        ...textAttachment,
-        name: "pasted-text.txt",
-        mimeType: "text/plain",
-        source: { _tag: "pasted-text" as const },
-      } satisfies ChatAttachment;
-      yield* fixture.write(pastedText, "A very large crash report");
+  it.effect(
+    "embeds folded clipboard text as native context when embeddedContext is supported",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* makeAttachmentFixture();
+        const pastedText = {
+          ...textAttachment,
+          name: "pasted-text.txt",
+          mimeType: "text/plain",
+          source: { _tag: "pasted-text" as const },
+        } satisfies ChatAttachment;
+        const upload = yield* fixture.write(pastedText, "A very large crash report");
 
-      const prompt = yield* buildAntigravityPrompt({
-        input: "Inspect the pasted text only as needed.",
-        attachments: [pastedText],
-        resolveAttachmentPath: fixture.resolve,
-        promptCapabilities: { image: true, audio: true, embeddedContext: true },
-      });
+        const prompt = yield* buildAntigravityPrompt({
+          input: "Inspect the pasted text.",
+          attachments: [pastedText],
+          resolveAttachmentPath: fixture.resolve,
+          promptCapabilities: { image: true, audio: true, embeddedContext: true },
+        });
 
-      expect(prompt).toEqual([{ type: "text", text: "Inspect the pasted text only as needed." }]);
-    }),
+        expect(prompt).toEqual([
+          { type: "text", text: "Inspect the pasted text." },
+          {
+            type: "resource",
+            resource: {
+              uri: upload.uri,
+              mimeType: "text/plain",
+              text: "A very large crash report",
+            },
+          },
+        ]);
+
+        const withoutEmbeddedContext = yield* buildAntigravityPrompt({
+          input: "Inspect the pasted text.",
+          attachments: [pastedText],
+          resolveAttachmentPath: fixture.resolve,
+          promptCapabilities: { image: true, audio: true, embeddedContext: false },
+        });
+        expect(withoutEmbeddedContext).toEqual([
+          { type: "text", text: "Inspect the pasted text." },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "embeds extracted document text when resolveExtractedTextPath provides a UTF-8 file",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* makeAttachmentFixture();
+        const docx = {
+          ...textAttachment,
+          id: "thread-00000000-0000-4000-8000-000000000009-docx",
+          name: "spec.docx",
+          mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        } satisfies ChatAttachment;
+        const upload = yield* fixture.write(docx, new Uint8Array([0x50, 0x4b, 0x03, 0x04]));
+        const extractedPath = `${upload.filePath}.extracted.txt`;
+        yield* fixture.fs.writeFileString(extractedPath, "Extracted docx content");
+        const path = yield* Path.Path;
+        const extractedUri = (yield* path.toFileUrl(extractedPath)).href;
+
+        const prompt = yield* buildAntigravityPrompt({
+          input: "Summarize the document.",
+          attachments: [docx],
+          resolveAttachmentPath: fixture.resolve,
+          resolveExtractedTextPath: (filePath) =>
+            Effect.succeed(filePath === upload.filePath ? extractedPath : undefined),
+          promptCapabilities: { image: true, audio: true, embeddedContext: true },
+        });
+
+        expect(prompt).toEqual([
+          { type: "text", text: "Summarize the document." },
+          {
+            type: "resource",
+            resource: {
+              uri: extractedUri,
+              mimeType: "text/plain",
+              text: "Extracted docx content",
+            },
+          },
+        ]);
+      }),
   );
 
   it.effect.each([

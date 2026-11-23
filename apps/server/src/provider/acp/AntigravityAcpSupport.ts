@@ -383,6 +383,9 @@ export const buildAntigravityPrompt = Effect.fn("buildAntigravityPrompt")(functi
   readonly resolveAttachmentPath: (
     attachment: NonNullable<ProviderSendTurnInput["attachments"]>[number],
   ) => string | null;
+  readonly resolveExtractedTextPath?:
+    | ((path: string) => Effect.Effect<string | undefined>)
+    | undefined;
   readonly promptCapabilities: EffectAcpSchema.AgentCapabilities["promptCapabilities"];
   /** Linked video needs a runtime whose `resource_link` handling is qualified and a Gemini model. */
   readonly agentVersion?: string | undefined;
@@ -402,11 +405,6 @@ export const buildAntigravityPrompt = Effect.fn("buildAntigravityPrompt")(functi
   let totalBytes = 0;
 
   for (const attachment of input.attachments ?? []) {
-    const isPastedText =
-      attachment.type === "file" &&
-      "source" in attachment &&
-      attachment.source?._tag === "pasted-text";
-    // The text already carries the path; keep folded pastes lazy so agents can search without embedding the whole file.
     const mimeType = attachment.mimeType.toLowerCase().split(";", 1)[0] ?? "";
     const image = attachment.type === "image" && IMAGE_MIME_TYPES.has(mimeType);
     const audio = attachment.type === "file" && AUDIO_MIME_TYPES.has(mimeType);
@@ -424,15 +422,16 @@ export const buildAntigravityPrompt = Effect.fn("buildAntigravityPrompt")(functi
       (mimeType.startsWith("text/") ||
         TEXT_MIME_TYPES.has(mimeType) ||
         TEXT_FILE_EXTENSIONS.has(path.extname(attachment.name).toLowerCase()));
+    // Antigravity cannot read outside the workspace without polluting Active Workspaces, so embed
+    // folded pastes and extracted document text directly when embeddedContext is supported.
     const isPathOnly =
       (attachment.type === "image" && (!image || input.promptCapabilities?.image !== true)) ||
       (attachment.type === "file" &&
-        (isPastedText ||
-          (audio
-            ? input.promptCapabilities?.audio !== true
-            : pdf || textFile
-              ? input.promptCapabilities?.embeddedContext !== true
-              : !video)));
+        (audio
+          ? input.promptCapabilities?.audio !== true
+          : pdf || textFile
+            ? input.promptCapabilities?.embeddedContext !== true
+            : !video));
     const attachmentPath = input.resolveAttachmentPath(attachment);
     if (!attachmentPath) {
       return yield* EffectAcpErrors.AcpRequestError.invalidParams(
@@ -453,7 +452,60 @@ export const buildAntigravityPrompt = Effect.fn("buildAntigravityPrompt")(functi
         `Could not read attachment '${attachment.name}'.`,
       );
     }
-    if (isPathOnly) continue;
+    if (isPathOnly) {
+      if (
+        attachment.type === "file" &&
+        !audio &&
+        !pdf &&
+        !video &&
+        !textFile &&
+        input.promptCapabilities?.embeddedContext === true &&
+        input.resolveExtractedTextPath !== undefined
+      ) {
+        const extractedPath = yield* input.resolveExtractedTextPath(attachmentPath);
+        if (extractedPath !== undefined) {
+          const extractedInfo = yield* fileSystem
+            .stat(extractedPath)
+            .pipe(Effect.catch(() => Effect.undefined));
+          const extractedSize =
+            extractedInfo?.type === "File" ? Number(extractedInfo.size) : Number.POSITIVE_INFINITY;
+          if (
+            extractedSize <= ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES &&
+            totalBytes + extractedSize <= MAX_TOTAL_ATTACHMENT_BYTES
+          ) {
+            const extractedBytes = yield* fileSystem
+              .stream(extractedPath, { bytesToRead: ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES + 1 })
+              .pipe(
+                Stream.runCollect,
+                Effect.map((chunks) => Buffer.concat(chunks)),
+                Effect.catch(() => Effect.undefined),
+              );
+            if (
+              extractedBytes !== undefined &&
+              extractedBytes.length <= ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES &&
+              totalBytes + extractedBytes.length <= MAX_TOTAL_ATTACHMENT_BYTES
+            ) {
+              const extractedUri = yield* path.toFileUrl(extractedPath).pipe(
+                Effect.map((url) => url.href),
+                Effect.catch(() => Effect.undefined),
+              );
+              const decoded = yield* Effect.try({
+                try: () => new TextDecoder("utf-8", { fatal: true }).decode(extractedBytes),
+                catch: () => "invalid-utf8" as const,
+              }).pipe(Effect.catch(() => Effect.undefined));
+              if (extractedUri !== undefined && decoded !== undefined && !decoded.includes("\0")) {
+                totalBytes += extractedBytes.length;
+                blocks.push({
+                  type: "resource",
+                  resource: { uri: extractedUri, mimeType: "text/plain", text: decoded },
+                });
+              }
+            }
+          }
+        }
+      }
+      continue;
+    }
     const size = Number(info.size);
     const limit = image
       ? PROVIDER_SEND_TURN_MAX_IMAGE_BYTES

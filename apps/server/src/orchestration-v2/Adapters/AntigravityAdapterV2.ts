@@ -33,6 +33,7 @@ import {
   describeAntigravitySubagentLaunches,
 } from "../../provider/acp/AntigravityChildWork.ts";
 import { readAntigravityClientTextFile } from "../../provider/acp/AntigravityClientFiles.ts";
+import { loadAntigravityProjectRules } from "../../provider/acp/AntigravityProjectRules.ts";
 import { watchAntigravityPromptOutcome } from "../../provider/acp/AntigravityTurnOutcome.ts";
 import {
   antigravityApprovalOptions,
@@ -139,14 +140,23 @@ export function makeAntigravityAcpAdapterFlavor(
   const makeRuntime = Effect.fn("AntigravityAdapterV2.makeRuntime")(
     function* (input: AcpAdapterV2RuntimeInput) {
       const scope = yield* Scope.fork(yield* Effect.scope);
+      const projectRules = yield* loadAntigravityProjectRules(input.cwd).pipe(
+        Effect.provideService(FileSystem.FileSystem, options.fileSystem),
+        Effect.provideService(Path.Path, options.path),
+      );
+      const sessionSystemPromptAppend =
+        projectRules === undefined
+          ? PULL_REQUEST_LINKING_INSTRUCTIONS
+          : `${PULL_REQUEST_LINKING_INSTRUCTIONS}\n\n${projectRules}`;
+      // Antigravity sorts [cwd, ...additionalDirectories] lexicographically and picks index 0 as
+      // Command Working Directory, so omit attachmentsDir here to keep the project cwd primary.
       const runtime = yield* options
         .withProcess(
           Scope.close(scope, Exit.void),
           options.makeRuntime({
             ...input,
             clientFileReads: true,
-            sessionSystemPromptAppend: PULL_REQUEST_LINKING_INSTRUCTIONS,
-            additionalDirectories: [options.host.paths.attachmentsDir],
+            sessionSystemPromptAppend,
           }),
         )
         .pipe(Effect.provideService(Scope.Scope, scope));
@@ -224,6 +234,7 @@ export function makeAntigravityAcpAdapterFlavor(
         input: text,
         attachments,
         resolveAttachmentPath,
+        resolveExtractedTextPath: options.host.resolveExtractedTextPath,
         promptCapabilities,
         agentVersion,
         currentModel,

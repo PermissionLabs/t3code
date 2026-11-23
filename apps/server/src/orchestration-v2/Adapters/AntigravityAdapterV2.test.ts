@@ -1114,8 +1114,8 @@ describe("AntigravityAdapterV2 runtime mode ceiling", () => {
 });
 
 describe("AntigravityAdapterV2 session system prompt", () => {
-  it.effect.each(["1.4.5", "1.4.1"])(
-    "carries PR linking once in the %s session setup or once per turn",
+  it.effect.each(["1.4.5", "1.4.1", "1.5.1"])(
+    "omits additionalDirectories and carries PR linking and project rules appropriately on %s",
     (agentVersion) =>
       Effect.gen(function* () {
         const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -1162,6 +1162,10 @@ describe("AntigravityAdapterV2 session system prompt", () => {
           defaultModel: Effect.undefined,
         });
         const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-ag-sp-" });
+        yield* fileSystem.writeFileString(
+          path.join(workspace, "AGENTS.md"),
+          "Use pnpm and follow workspace conventions.",
+        );
         const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: "full-access",
           interactionMode: "default",
@@ -1228,13 +1232,23 @@ describe("AntigravityAdapterV2 session system prompt", () => {
         const sessionNew = (yield* fileSystem.readFileString(requestLog))
           .trim()
           .split("\n")
-          .map((line) => JSON.parse(line) as { method?: string; params?: { _meta?: unknown } })
+          .map(
+            (line) =>
+              JSON.parse(line) as {
+                method?: string;
+                params?: { cwd?: string; additionalDirectories?: unknown; _meta?: unknown };
+              },
+          )
           .find((request) => request.method === "session/new");
+        assert.equal(sessionNew?.params?.cwd, workspace);
+        assert.isUndefined(sessionNew?.params?.additionalDirectories);
         const append = JSON.stringify(sessionNew?.params?._meta ?? null);
         // Identity stays per turn either way.
         assert.include(sent, "through the Antigravity harness, as gemini-test-low");
         if (agentVersion === "1.4.5") {
           assert.include(append, "pull_request_linking");
+          assert.include(append, "<user_rules>");
+          assert.include(append, "Use pnpm and follow workspace conventions.");
           assert.notInclude(sent, "<pull_request_linking>");
         } else {
           assert.notInclude(append, "systemPrompt");
