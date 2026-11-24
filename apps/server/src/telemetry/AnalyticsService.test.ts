@@ -6,8 +6,10 @@ import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
@@ -437,5 +439,101 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AnalyticsService
 
       assert.deepEqual(capturedPaths, []);
     }),
+  );
+
+  // PermissionLabs fork: telemetry is opt-in, and identity files stay unread while it is off.
+  it.effect.each([
+    { name: "unset", enabled: undefined, expectSent: false },
+    { name: "true", enabled: "true", expectSent: true },
+    { name: "false", enabled: "false", expectSent: false },
+  ] as const)(
+    "T3CODE_TELEMETRY_ENABLED $name: sends only when opted in, reads identity files only then",
+    ({ enabled, expectSent }) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-telemetry-home-" });
+        yield* fileSystem.makeDirectory(path.join(home, ".codex"));
+        yield* fileSystem.writeFileString(
+          path.join(home, ".codex", "auth.json"),
+          `{"tokens":{"account_id":"fixture-account"}}`,
+        );
+        yield* fileSystem.writeFileString(
+          path.join(home, ".claude.json"),
+          `{"userID":"fixture-user","oauthAccount":{"accountUuid":"fixture-uuid"}}`,
+        );
+        const identityPaths = [
+          path.join(home, ".codex", "auth.json"),
+          path.join(home, ".claude.json"),
+        ];
+        const reads: Array<string> = [];
+        const watchedFileSystem: FileSystem.FileSystem = {
+          ...fileSystem,
+          readFileString: (filePath, encoding) => {
+            reads.push(filePath);
+            return fileSystem.readFileString(filePath, encoding);
+          },
+        };
+        const sent: Array<string> = [];
+        let ownersRead = false;
+        const client = HttpClient.make((request) =>
+          Effect.gen(function* () {
+            if (request.body._tag === "Uint8Array") {
+              const body = yield* decodeSentBatch(new TextDecoder().decode(request.body.body)).pipe(
+                Effect.orDie,
+              );
+              sent.push(...body.batch.map((event) => event.event));
+            }
+            return yield* respondWithStatus(204)(request);
+          }),
+        );
+        const runtimeLayer = AnalyticsService.layer.pipe(
+          Layer.provideMerge(
+            ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "t3-telemetry-optin-" }),
+          ),
+          Layer.provide(
+            ConfigProvider.layer(
+              ConfigProvider.fromUnknown({
+                ...(enabled === undefined ? {} : { T3CODE_TELEMETRY_ENABLED: enabled }),
+                T3CODE_POSTHOG_KEY: "phc_test_key",
+                T3CODE_POSTHOG_HOST: "http://localhost",
+              }),
+            ),
+          ),
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(HostProcess.Platform, "linux"),
+              Layer.succeed(HostProcess.Architecture, "arm64"),
+              Layer.succeed(HttpClient.HttpClient, client),
+              ManagedPolicy.layerTest(),
+            ),
+          ),
+        );
+
+        yield* Effect.gen(function* () {
+          const analytics = yield* AnalyticsService.AnalyticsService;
+          yield* analytics.record("test.optin");
+          yield* analytics.recordOwners(
+            Effect.sync(() => {
+              ownersRead = true;
+              return [{ source: "connect" as const, ownerId: "b".repeat(64) }];
+            }),
+            "server",
+          );
+          yield* analytics.flush;
+        }).pipe(
+          Effect.provide(runtimeLayer),
+          Effect.provideService(FileSystem.FileSystem, watchedFileSystem),
+          Effect.provideService(HostProcess.HomeDirectory, home),
+          Effect.provideService(HostProcess.Environment, {}),
+        );
+
+        assert.deepEqual(sent, expectSent ? ["test.optin", "install.owner_observed"] : []);
+        assert.equal(ownersRead, expectSent);
+        assert.deepEqual(
+          identityPaths.filter((identityPath) => reads.includes(identityPath)),
+          expectSent ? identityPaths : [],
+        );
+      }),
   );
 });

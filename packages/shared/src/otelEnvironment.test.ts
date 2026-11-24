@@ -387,17 +387,30 @@ describe("OtelEnvironment", () => {
 });
 
 describe("isRelayTracingEnabled", () => {
-  it("defaults on and respects the T3CODE SDK override of the standard kill switch", () => {
-    assert.isTrue(OtelEnvironment.isRelayTracingEnabled({}));
-    assert.isFalse(OtelEnvironment.isRelayTracingEnabled({ OTEL_SDK_DISABLED: "true" }));
+  // PermissionLabs fork: relay tracing is opt-in through T3CODE_TELEMETRY_ENABLED.
+  it("defaults off and turns on only for T3CODE_TELEMETRY_ENABLED=true", () => {
+    assert.isFalse(OtelEnvironment.isRelayTracingEnabled({}));
+    assert.isTrue(OtelEnvironment.isRelayTracingEnabled({ T3CODE_TELEMETRY_ENABLED: "true" }));
+    assert.isFalse(OtelEnvironment.isRelayTracingEnabled({ T3CODE_TELEMETRY_ENABLED: "false" }));
+  });
+
+  it("respects the T3CODE SDK override of the standard kill switch once opted in", () => {
+    assert.isFalse(
+      OtelEnvironment.isRelayTracingEnabled({
+        T3CODE_TELEMETRY_ENABLED: "true",
+        OTEL_SDK_DISABLED: "true",
+      }),
+    );
     assert.isTrue(
       OtelEnvironment.isRelayTracingEnabled({
+        T3CODE_TELEMETRY_ENABLED: "true",
         OTEL_SDK_DISABLED: "true",
         T3CODE_OTEL_SDK_DISABLED: "false",
       }),
     );
     assert.isFalse(
       OtelEnvironment.isRelayTracingEnabled({
+        T3CODE_TELEMETRY_ENABLED: "true",
         OTEL_SDK_DISABLED: "false",
         T3CODE_OTEL_SDK_DISABLED: "true",
       }),

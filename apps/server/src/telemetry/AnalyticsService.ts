@@ -71,7 +71,8 @@ const TelemetryEnvConfig = Config.all({
   posthogHost: Config.String("T3CODE_POSTHOG_HOST").pipe(
     Config.withDefault("https://ingest.t3.codes"),
   ),
-  enabled: Config.Boolean("T3CODE_TELEMETRY_ENABLED").pipe(Config.withDefault(true)),
+  // PermissionLabs fork: telemetry is opt-in; only T3CODE_TELEMETRY_ENABLED=true turns it on.
+  enabled: Config.Boolean("T3CODE_TELEMETRY_ENABLED").pipe(Config.withDefault(false)),
   flushBatchSize: Config.Number("T3CODE_TELEMETRY_FLUSH_BATCH_SIZE").pipe(Config.withDefault(20)),
   maxBufferedEvents: Config.Number("T3CODE_TELEMETRY_MAX_BUFFERED_EVENTS").pipe(
     Config.withDefault(1_000),
@@ -95,7 +96,8 @@ export class AnalyticsService extends Context.Service<
      * per server process, so reconnects and repeated reads are free.
      */
     readonly recordOwners: (
-      owners: ReadonlyArray<TelemetryOwner>,
+      // An effect is run only while telemetry is enabled, so it can read identity files.
+      owners: ReadonlyArray<TelemetryOwner> | Effect.Effect<ReadonlyArray<TelemetryOwner>>,
       observedBy: "server" | "client",
     ) => Effect.Effect<void>;
   }
@@ -133,7 +135,7 @@ export const make = Effect.gen(function* () {
       return Effect.succeed(false);
     const preference = hostEnvironment.T3CODE_TELEMETRY_ENABLED;
     return Config.Boolean("T3CODE_TELEMETRY_ENABLED").pipe(
-      Config.withDefault(true),
+      Config.withDefault(false),
       Effect.provideService(
         ConfigProvider.ConfigProvider,
         ConfigProvider.fromEnv({
@@ -145,7 +147,13 @@ export const make = Effect.gen(function* () {
   });
   const httpClient = yield* HttpClient.HttpClient;
   const serverConfig = yield* ServerConfig.ServerConfig;
-  const { distinctId, installId } = yield* getTelemetryIdentity;
+  // Provider login files are read only once telemetry is enabled, never while it is off.
+  const identity = yield* Effect.cached(
+    Effect.provideContext(
+      getTelemetryIdentity,
+      yield* Effect.context<Effect.Services<typeof getTelemetryIdentity>>(),
+    ),
+  );
   const crypto = yield* SecureRandom.SecureRandom;
   const bufferRef = yield* Ref.make<ReadonlyArray<BufferedAnalyticsEvent>>([]);
   const deliveryRef = yield* Ref.make<DeliveryState>({
@@ -199,7 +207,9 @@ export const make = Effect.gen(function* () {
   const sendBatch = Effect.fn("AnalyticsService.sendBatch")(function* (
     events: ReadonlyArray<BufferedAnalyticsEvent>,
   ) {
-    if (!(yield* telemetryEnabled) || !distinctId) return;
+    if (!(yield* telemetryEnabled)) return;
+    const { distinctId, installId } = yield* identity;
+    if (!distinctId) return;
 
     const payload = {
       api_key: telemetryConfig.posthogKey,
@@ -311,7 +321,7 @@ export const make = Effect.gen(function* () {
 
   const record: AnalyticsService["Service"]["record"] = Effect.fn("AnalyticsService.record")(
     function* (event, properties) {
-      if (!(yield* telemetryEnabled) || !distinctId) return;
+      if (!(yield* telemetryEnabled) || !(yield* identity).distinctId) return;
 
       // Catch Node UUID defects too; best-effort telemetry drops events without UUIDs.
       const uuid = yield* Effect.exit(crypto.uuidV7());
@@ -329,7 +339,21 @@ export const make = Effect.gen(function* () {
 
   const recordOwners: AnalyticsService["Service"]["recordOwners"] = Effect.fn(
     "AnalyticsService.recordOwners",
-  )((owners, observedBy) =>
+  )((ownersOrRead, observedBy) =>
+    Effect.flatMap(
+      Effect.isEffect(ownersOrRead)
+        ? Effect.flatMap(telemetryEnabled, (enabled) =>
+            enabled ? ownersOrRead : Effect.succeed<ReadonlyArray<TelemetryOwner>>([]),
+          )
+        : Effect.succeed(ownersOrRead),
+      (owners) => recordOwnerList(owners, observedBy),
+    ),
+  );
+
+  const recordOwnerList = (
+    owners: ReadonlyArray<TelemetryOwner>,
+    observedBy: "server" | "client",
+  ) =>
     Effect.forEach(
       owners,
       ({ source, ownerId }) =>
@@ -347,8 +371,7 @@ export const make = Effect.gen(function* () {
           ),
         ),
       { discard: true },
-    ),
-  );
+    );
 
   yield* Effect.forever(Effect.sleep(FLUSH_INTERVAL_MS).pipe(Effect.andThen(flushWhenDue)), {
     disableYield: true,
