@@ -52,6 +52,7 @@ export type T3McpToolSummaryAction =
   | "project-clone"
   | "environment-read"
   | "environment-links"
+  | "usage-limits"
   | "environment-link"
   | "environment-unlink"
   | "environment-update"
@@ -342,6 +343,7 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     ["List", "Listing", "Listed", "linked environments"],
     "environment-links",
   ),
+  provider_usage_limits: tool(["Read", "Reading", "Read", "provider usage limits"], "usage-limits"),
   t3_environment_link: tool(
     ["Ask to link", "Asking to link", "Asked to link", "an environment"],
     "environment-link",
