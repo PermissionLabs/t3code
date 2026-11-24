@@ -93,18 +93,6 @@ export interface FileInspectorPaneLayout {
   readonly width: number | null;
 }
 
-export function deriveThreadFeedInitialContentInset(input: {
-  readonly platform: string;
-  readonly usesNativeAutomaticInsets: boolean;
-  readonly bottomContentInset: number;
-}): { readonly bottom: number } | undefined {
-  if (input.platform !== "android" || input.usesNativeAutomaticInsets) {
-    return undefined;
-  }
-
-  return { bottom: Math.max(0, input.bottomContentInset) };
-}
-
 export function deriveLayout(input: {
   readonly width: number;
   readonly height: number;
@@ -163,7 +151,13 @@ export function deriveLayout(input: {
     usesSplitView: true,
     listPaneWidth:
       division?.x ??
-      clamp(Math.round(width * 0.32), SPLIT_SIDEBAR_MIN_WIDTH, SPLIT_SIDEBAR_DEFAULT_MAX_WIDTH),
+      (input.nativeWorkspace === true && variant === "medium"
+        ? 350
+        : clamp(
+            Math.round(width * 0.32),
+            SPLIT_SIDEBAR_MIN_WIDTH,
+            SPLIT_SIDEBAR_DEFAULT_MAX_WIDTH,
+          )),
     ...(division ? { listPaneGap: division.width } : {}),
     shellPadding: 0,
   };

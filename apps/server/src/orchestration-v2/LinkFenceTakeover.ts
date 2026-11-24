@@ -87,12 +87,16 @@ const releaseOnUserMessage = Effect.fn("LinkFenceTakeover.releaseOnUserMessage")
  * The only caller is that path in `ws.ts`, which `/mcp` sessions (links among them) never reach.
  */
 export const dispatchFromUserClient = Effect.fn("LinkFenceTakeover.dispatchFromUserClient")(
-  function* (command: OrchestrationV2Command, session: { readonly sessionId: string }) {
+  function* (
+    command: OrchestrationV2Command,
+    session: { readonly sessionId: string },
+    sender: { readonly managesProviders: boolean },
+  ) {
     const stamped = ThreadManagement.withCreationProvenance(command, {
       createdBy: "user",
       creationSource: "creationSource" in command ? command.creationSource : "web",
     });
     yield* releaseOnUserMessage(stamped, session);
-    return yield* ThreadMessageIntake.dispatchCommand(stamped);
+    return yield* ThreadMessageIntake.dispatchCommand(stamped, sender);
   },
 );
