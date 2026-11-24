@@ -6,6 +6,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 
+import { deriveInstanceId } from "../../../../../../packages/client-runtime/src/providerInstanceIds.ts";
 import { modelWindows, summaryWindows } from "../../../provider/antigravityUsageLimits.ts";
 import { claudeUsageResponseToLimits } from "../../../provider/claudeUsageLimits.ts";
 import { codexRateLimitsToLimits } from "../../../provider/codexUsageLimits.ts";
@@ -79,7 +80,7 @@ describe("buildProviderUsageReport", () => {
     expect(report).toEqual([
       {
         provider: "codex",
-        instanceId: "codex",
+        instance: "codex:1",
         status: "ok",
         observedAt: "2026-11-24T11:50:00.000Z",
         windows: [
@@ -118,11 +119,9 @@ describe("buildProviderUsageReport", () => {
       nowMs: NOW,
     });
 
-    expect(
-      report.map(({ provider, instanceId, status }) => [provider, instanceId, status]),
-    ).toEqual([
-      ["codex", "codex", "ok"],
-      ["codex", "codex-work", "unavailable"],
+    expect(report.map(({ provider, instance, status }) => [provider, instance, status])).toEqual([
+      ["codex", "codex:1", "ok"],
+      ["codex", "codex:2", "unavailable"],
       ["claudeAgent", undefined, "unavailable"],
       ["antigravity", undefined, "unavailable"],
     ]);
@@ -429,5 +428,53 @@ describe("buildProviderUsageReport", () => {
       windowDurationSource: "known_constant",
       pace: { computable: true },
     });
+  });
+  it("numbers instances by configured order and never echoes label-derived instance ids", () => {
+    const label = "person@example.com";
+    const derived = ProviderInstanceId.make(deriveInstanceId("codex", label));
+    expect(derived).toBe("codex_person_example_com");
+    const derivedClaude = ProviderInstanceId.make(deriveInstanceId("claudeAgent", label));
+    const providers = [
+      snapshot("codex", { instanceId: derived, displayName: label, usageLimits: limits() }),
+      snapshot("codex", { usageLimits: limits() }),
+      snapshot("codex", {
+        instanceId: ProviderInstanceId.make(deriveInstanceId("codex", "work person")),
+        displayName: "work person",
+        enabled: false,
+      }),
+      snapshot("claudeAgent", { instanceId: derivedClaude, displayName: label, enabled: false }),
+    ];
+    const reportFor = (input: ReadonlyArray<ServerProvider>) =>
+      buildProviderUsageReport({ providers: input, nowMs: NOW });
+
+    const report = reportFor(providers);
+    expect(
+      report.map(({ provider, instance, status, unavailableReason }) => [
+        provider,
+        instance,
+        status,
+        unavailableReason,
+      ]),
+    ).toEqual([
+      ["codex", "codex:1", "ok", undefined],
+      ["codex", "codex:2", "ok", undefined],
+      ["codex", "codex:3", "unavailable", "disabled"],
+      ["claudeAgent", "claudeAgent:1", "unavailable", "disabled"],
+      ["antigravity", undefined, "unavailable", "notConfigured"],
+    ]);
+    // Same configuration in any order, or narrowed to one provider, keeps every number.
+    expect(reportFor(providers.toReversed())).toEqual(report);
+    expect(
+      buildProviderUsageReport({
+        providers: providers.toReversed(),
+        requested: ["codex"],
+        nowMs: NOW,
+      }),
+    ).toEqual(report.slice(0, 3));
+    const serialized = JSON.stringify(report);
+    for (const fragment of ["person", "example", "work", "@", derived, derivedClaude]) {
+      expect(serialized).not.toContain(fragment);
+    }
+    expect(serialized).not.toMatch(/instanceId/);
   });
 });

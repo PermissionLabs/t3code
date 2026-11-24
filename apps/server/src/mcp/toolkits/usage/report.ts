@@ -5,6 +5,8 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
+import { orderProviderSnapshots } from "../../../provider/providerStatusCache.ts";
+
 export const USAGE_REPORT_DRIVERS = ["codex", "claudeAgent", "antigravity"] as const;
 export type UsageReportDriver = (typeof USAGE_REPORT_DRIVERS)[number];
 
@@ -42,7 +44,7 @@ type UsageWindowReport = typeof UsageWindowReport.Type;
 
 export const ProviderUsageReport = Schema.Struct({
   provider: Schema.Literals(USAGE_REPORT_DRIVERS),
-  instanceId: Schema.optional(Schema.String),
+  instance: Schema.optional(Schema.String),
   status: Schema.Literals(["ok", "unavailable"]),
   unavailableReason: Schema.optional(UsageUnavailableReason),
   windows: Schema.Array(UsageWindowReport),
@@ -169,7 +171,7 @@ function paceOf(
 const unavailable = (
   provider: UsageReportDriver,
   reason: UsageUnavailableReason,
-  extra: { readonly instanceId?: string; readonly observedAt?: string } = {},
+  extra: { readonly instance?: string; readonly observedAt?: string } = {},
 ): ProviderUsageReport => ({
   provider,
   ...extra,
@@ -184,34 +186,34 @@ const unavailable = (
  */
 function reportInstance(
   provider: UsageReportDriver,
+  instance: string,
   snapshot: ServerProvider,
   nowMs: number,
   maxAgeMs: number,
 ): ProviderUsageReport {
-  const instanceId = snapshot.instanceId as string;
   if (!snapshot.enabled || snapshot.status === "disabled") {
-    return unavailable(provider, "disabled", { instanceId });
+    return unavailable(provider, "disabled", { instance });
   }
-  if (!snapshot.installed) return unavailable(provider, "notInstalled", { instanceId });
+  if (!snapshot.installed) return unavailable(provider, "notInstalled", { instance });
   if (snapshot.auth.status === "unauthenticated") {
-    return unavailable(provider, "unauthenticated", { instanceId });
+    return unavailable(provider, "unauthenticated", { instance });
   }
   const limits = snapshot.usageLimits;
   // Absent while the first probe runs and right after an account change clears the old bars.
-  if (limits === undefined) return unavailable(provider, "notLoaded", { instanceId });
+  if (limits === undefined) return unavailable(provider, "notLoaded", { instance });
   const observedAt = limits.checkedAt;
   if (limits.unavailable?.reason === "unsupported") {
-    return unavailable(provider, "unsupported", { instanceId, observedAt });
+    return unavailable(provider, "unsupported", { instance, observedAt });
   }
   if (limits.windows.length === 0) {
     return unavailable(provider, limits.unavailable ? "probeFailed" : "noWindows", {
-      instanceId,
+      instance,
       observedAt,
     });
   }
   const observedMs = Date.parse(observedAt);
   if (!Number.isFinite(observedMs) || nowMs - observedMs > maxAgeMs) {
-    return unavailable(provider, "stale", { instanceId, observedAt });
+    return unavailable(provider, "stale", { instance, observedAt });
   }
   const nameWindow = makeWindowNamer(provider);
   const windows = limits.windows.flatMap((window): ReadonlyArray<UsageWindowReport> => {
@@ -242,8 +244,8 @@ function reportInstance(
       },
     ];
   });
-  if (windows.length === 0) return unavailable(provider, "stale", { instanceId, observedAt });
-  return { provider, instanceId, status: "ok", windows, observedAt };
+  if (windows.length === 0) return unavailable(provider, "stale", { instance, observedAt });
+  return { provider, instance, status: "ok", windows, observedAt };
 }
 
 export function buildProviderUsageReport(input: {
@@ -255,8 +257,14 @@ export function buildProviderUsageReport(input: {
   const maxAgeMs = (input.maxAgeSec ?? DEFAULT_MAX_AGE_SEC) * 1_000;
   const requested = input.requested?.length ? [...new Set(input.requested)] : USAGE_REPORT_DRIVERS;
   return requested.flatMap((provider) => {
-    const instances = input.providers.filter((snapshot) => snapshot.driver === provider);
+    // Instance ids derive from user labels (often an email), so only the 1-based position in the
+    // registry's configured order leaves the server; re-sorting keeps it independent of input order.
+    const instances = orderProviderSnapshots(input.providers).filter(
+      (snapshot) => snapshot.driver === provider,
+    );
     if (instances.length === 0) return [unavailable(provider, "notConfigured")];
-    return instances.map((snapshot) => reportInstance(provider, snapshot, input.nowMs, maxAgeMs));
+    return instances.map((snapshot, index) =>
+      reportInstance(provider, `${provider}:${index + 1}`, snapshot, input.nowMs, maxAgeMs),
+    );
   });
 }

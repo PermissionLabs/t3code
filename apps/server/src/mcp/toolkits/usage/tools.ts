@@ -9,7 +9,7 @@ import { DEFAULT_MAX_AGE_SEC, ProviderUsageReport, USAGE_REPORT_DRIVERS } from "
 
 const ProviderUsageLimitsTool = Tool.make("provider_usage_limits", {
   description:
-    "Cached subscription usage per window: remainingFraction (0-1), resetsAt. Never probes. Missing/stale data is `unavailable` with a reason. If any window has pace.computable=false, report that host's pace as unavailable and ask the user.",
+    "Cached subscription usage per window: remainingFraction (0-1), resetsAt. instance `<provider>:<n>` = nth configured instance. Never probes. Missing/stale data is `unavailable` with a reason. If any window has pace.computable=false, report that host's pace as unavailable and ask the user.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     providers: Schema.optional(
