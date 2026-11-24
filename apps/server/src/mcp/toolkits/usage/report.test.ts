@@ -6,6 +6,9 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 
+import { modelWindows, summaryWindows } from "../../../provider/antigravityUsageLimits.ts";
+import { claudeUsageResponseToLimits } from "../../../provider/claudeUsageLimits.ts";
+import { codexRateLimitsToLimits } from "../../../provider/codexUsageLimits.ts";
 import { buildProviderUsageReport } from "./report.ts";
 
 const NOW = Date.parse("2026-11-24T12:00:00.000Z");
@@ -53,14 +56,14 @@ const limits = (overrides: Partial<ServerProviderUsageLimits> = {}): ServerProvi
   externalUsage: { label: "Usage", url: "https://usage.example.com/secret" },
   windows: [
     {
-      id: "session",
+      id: "primary",
       kind: "session",
       label: "Session",
       usedPercent: 37.5,
       resetsAt: "2026-11-24T14:00:00.000Z",
       windowDurationMins: 300,
     },
-    { id: "weekly", kind: "weekly", label: "Weekly", usedPercent: 100 },
+    { id: "secondary", kind: "weekly", label: "Weekly", usedPercent: 100 },
   ],
   ...overrides,
 });
@@ -81,14 +84,22 @@ describe("buildProviderUsageReport", () => {
         observedAt: "2026-11-24T11:50:00.000Z",
         windows: [
           {
-            id: "session",
+            id: "codex:primary",
             label: "Session",
             kind: "session",
             remainingFraction: 0.625,
             resetsAt: "2026-11-24T14:00:00.000Z",
             windowDurationSec: 18_000,
+            windowDurationSource: "provider",
+            pace: { computable: true },
           },
-          { id: "weekly", label: "Weekly", kind: "weekly", remainingFraction: 0 },
+          {
+            id: "codex:secondary",
+            label: "Weekly",
+            kind: "weekly",
+            remainingFraction: 0,
+            pace: { computable: false, reason: "missingResetsAt" },
+          },
         ],
       },
     ]);
@@ -182,14 +193,14 @@ describe("buildProviderUsageReport", () => {
             checkedAt: "2026-11-24T10:00:00.000Z",
             windows: [
               {
-                id: "session",
+                id: "five_hour",
                 kind: "session",
                 label: "Session",
                 usedPercent: 80,
                 resetsAt: "2026-11-24T11:00:00.000Z",
               },
               {
-                id: "weekly",
+                id: "seven_day",
                 kind: "weekly",
                 label: "Weekly",
                 usedPercent: 20,
@@ -206,7 +217,217 @@ describe("buildProviderUsageReport", () => {
 
     expect(report?.status).toBe("ok");
     expect(report?.windows.map((window) => [window.id, window.remainingFraction])).toEqual([
-      ["weekly", 0.8],
+      ["claude:seven_day", 0.8],
     ]);
+  });
+
+  it("names windows only from a fixed vocabulary, whatever free text the provider sends", () => {
+    const leak = "leak.person@example.com Bearer sk-leak-token";
+    const claude = claudeUsageResponseToLimits({
+      checkedAt: "2026-11-24T11:50:00.000Z",
+      response: {
+        rate_limits_available: true,
+        rate_limits: {
+          ...({
+            model_scoped: [
+              { display_name: "Fable", utilization: 10, resets_at: "2026-11-30T00:00:00Z" },
+              { display_name: leak, utilization: 20, resets_at: "2026-11-30T00:00:00Z" },
+              { display_name: `Opus ${leak}`, utilization: 30, resets_at: null },
+            ],
+          } as object),
+        },
+      },
+    }).limits;
+    const antigravityWindows = [
+      ...summaryWindows(
+        {
+          groups: [
+            {
+              displayName: leak,
+              buckets: [
+                {
+                  bucketId: "gemini-5h",
+                  window: "5h",
+                  displayName: leak,
+                  description: leak,
+                  remainingFraction: 0.5,
+                  resetTime: "2026-11-24T14:00:00Z",
+                },
+                {
+                  bucketId: `gemini-argon-${leak}`,
+                  window: "weekly",
+                  displayName: leak,
+                  remainingFraction: 0.4,
+                  resetTime: "2026-11-30T00:00:00Z",
+                },
+                { bucketId: leak, displayName: leak, remainingFraction: 0.3 },
+              ],
+            },
+          ],
+        },
+        NOW,
+      ),
+      ...modelWindows({
+        models: { [`gemini-${leak}`]: { quotaInfo: { remainingFraction: 0.2 } } },
+      }),
+    ];
+    const report = buildProviderUsageReport({
+      providers: [
+        snapshot("claudeAgent", { usageLimits: claude }),
+        snapshot("antigravity", {
+          usageLimits: limits({ windows: antigravityWindows }),
+        }),
+      ],
+      requested: ["claudeAgent", "antigravity"],
+      nowMs: NOW,
+    });
+
+    expect(report.map((entry) => entry.windows.map(({ id, label }) => [id, label]))).toEqual([
+      [
+        ["claude:seven_day_model:fable", "Weekly · Fable"],
+        ["claude:model_scoped:1", "Weekly · Other model"],
+        ["claude:model_scoped:2", "Weekly · Other model"],
+      ],
+      [
+        ["antigravity:gemini_5h", "Gemini · 5-hour"],
+        ["antigravity:weekly:1", "Weekly"],
+        ["antigravity:other:1", "Quota"],
+        ["antigravity:gemini_quota", "Gemini · Reported quota"],
+      ],
+    ]);
+    const serialized = JSON.stringify(report);
+    for (const fragment of ["@", "example.com", "leak", "sk-", "Bearer"]) {
+      expect(serialized).not.toContain(fragment);
+    }
+  });
+
+  it("marks windows whose pace cannot be computed instead of dropping them", () => {
+    const epochSec = (iso: string) => Date.parse(iso) / 1_000;
+    const codex = codexRateLimitsToLimits({
+      checkedAt: "2026-11-24T11:50:00.000Z",
+      snapshot: {
+        primary: {
+          usedPercent: 40,
+          resetsAt: epochSec("2026-11-24T14:00:00Z"),
+          windowDurationMins: 300,
+        },
+        individualLimit: { remainingPercent: 70, resetsAt: epochSec("2026-12-01T00:00:00Z") },
+      },
+    });
+    const claude = claudeUsageResponseToLimits({
+      checkedAt: "2026-11-24T11:50:00.000Z",
+      response: {
+        rate_limits_available: true,
+        rate_limits: {
+          five_hour: { utilization: 25, resets_at: "2026-11-24T14:00:00Z" },
+          extra_usage: {
+            is_enabled: true,
+            monthly_limit: 10_000,
+            used_credits: 2_500,
+            utilization: null,
+          },
+        },
+      },
+    }).limits;
+    const untouchedReset = "2026-11-24T17:00:00.000Z";
+    const antigravity = limits({
+      windows: [
+        ...summaryWindows(
+          {
+            buckets: [
+              {
+                bucketId: "3p-5h",
+                window: "5h",
+                remainingFraction: 1,
+                resetTime: untouchedReset,
+              },
+            ],
+          },
+          NOW,
+        ),
+        ...modelWindows({
+          models: {
+            "gemini-pro": {
+              quotaInfo: { remainingFraction: 0.6, resetTime: "2026-11-25T00:00:00Z" },
+            },
+          },
+        }),
+      ],
+    });
+    const report = buildProviderUsageReport({
+      providers: [
+        snapshot("codex", { usageLimits: codex }),
+        snapshot("claudeAgent", { usageLimits: claude }),
+        snapshot("antigravity", { usageLimits: antigravity }),
+      ],
+      nowMs: NOW,
+    });
+
+    expect(
+      report.flatMap((entry) =>
+        entry.windows.map(({ id, windowDurationSec, windowDurationSource, pace }) => [
+          id,
+          windowDurationSec,
+          windowDurationSource,
+          pace,
+        ]),
+      ),
+    ).toEqual([
+      ["codex:primary", 18_000, "provider", { computable: true }],
+      [
+        "codex:individual",
+        undefined,
+        undefined,
+        { computable: false, reason: "missingWindowDuration" },
+      ],
+      ["claude:five_hour", 18_000, "known_constant", { computable: true }],
+      [
+        "claude:monthly_spend",
+        undefined,
+        undefined,
+        { computable: false, reason: "missingResetsAt" },
+      ],
+      [
+        "antigravity:shared_3p_5h",
+        18_000,
+        "known_constant",
+        { computable: false, reason: "notStarted" },
+      ],
+      [
+        "antigravity:gemini_quota",
+        undefined,
+        undefined,
+        { computable: false, reason: "missingWindowDuration" },
+      ],
+    ]);
+  });
+
+  it("fills a known fixed window length the snapshot lacks", () => {
+    const [report] = buildProviderUsageReport({
+      providers: [
+        snapshot("antigravity", {
+          usageLimits: limits({
+            windows: [
+              {
+                id: "gemini-weekly",
+                kind: "weekly",
+                label: "Gemini · Weekly",
+                usedPercent: 10,
+                resetsAt: "2026-11-30T00:00:00.000Z",
+              },
+            ],
+          }),
+        }),
+      ],
+      requested: ["antigravity"],
+      nowMs: NOW,
+    });
+
+    expect(report?.windows[0]).toMatchObject({
+      id: "antigravity:gemini_weekly",
+      windowDurationSec: 604_800,
+      windowDurationSource: "known_constant",
+      pace: { computable: true },
+    });
   });
 });

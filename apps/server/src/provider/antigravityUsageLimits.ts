@@ -116,7 +116,7 @@ function summaryResetTime(
   return untouched ? undefined : bucket.resetTime;
 }
 
-function summaryWindows(summary: typeof Summary.Type, requestedAt: number) {
+export function summaryWindows(summary: typeof Summary.Type, requestedAt: number) {
   const windows = new Map<string, ServerProviderUsageWindow>();
   const groups = summary.groups?.some((group) => group.buckets?.length)
     ? summary.groups
@@ -149,7 +149,7 @@ function summaryWindows(summary: typeof Summary.Type, requestedAt: number) {
 }
 
 /** Older accounts expose model quotas without a window length. Do not invent a reset cadence. */
-function modelWindows(models: typeof Models.Type) {
+export function modelWindows(models: typeof Models.Type) {
   const windows = new Map<string, ServerProviderUsageWindow>();
   for (const [modelId, model] of Object.entries(models.models)) {
     const family =
