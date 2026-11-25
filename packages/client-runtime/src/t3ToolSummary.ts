@@ -1122,6 +1122,23 @@ export function summarizeT3ToolCalls(
           );
       break;
     }
+    case "usage-limits": {
+      const count = selected.length;
+      label = done
+        ? resolve(
+            msg(
+              "{count, plural, one {Checked provider usage limits {count} time} other {Checked provider usage limits {count} times}}",
+              { count },
+            ),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Tried to check provider usage limits {count} time} other {Tried to check provider usage limits {count} times}}",
+              { count },
+            ),
+          );
+      break;
+    }
     case "theme-read": {
       const count = selected.length;
       label = done

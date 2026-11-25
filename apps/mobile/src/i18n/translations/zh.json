@@ -263,6 +263,8 @@
   "c70d82623deb2d58": "{count, plural, other {尝试检查环境偏好设置 {count} 次}}",
   "bde8332c22df12b5": "{count, plural, other {已更新环境偏好设置 {count} 次}}",
   "e2130fe5df35d0fc": "{count, plural, other {尝试更新环境偏好设置 {count} 次}}",
+  "9cf2fa80a6592dac": "{count, plural, one {已检查提供方用量限制 {count} 次} other {已检查提供方用量限制 {count} 次}}",
+  "5fc23c75319d8883": "{count, plural, one {尝试检查提供方用量限制 {count} 次} other {尝试检查提供方用量限制 {count} 次}}",
   "04360a2f0b44b37b": "{count, plural, other {已检查主题 {count} 次}}",
   "227120bfdd990e37": "{count, plural, other {尝试检查主题 {count} 次}}",
   "a16ae702cbb60dde": "{count, plural, other {已设置主题 {count} 次}}",

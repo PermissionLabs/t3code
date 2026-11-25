@@ -263,6 +263,8 @@
   "c70d82623deb2d58": "{count, plural, one {Försökte kontrollera miljöinställningar {count} gång} other {Försökte kontrollera miljöinställningar {count} gånger}}",
   "bde8332c22df12b5": "{count, plural, one {Uppdaterade miljöinställningar {count} gång} other {Uppdaterade miljöinställningar {count} gånger}}",
   "e2130fe5df35d0fc": "{count, plural, one {Försökte uppdatera miljöinställningar {count} gång} other {Försökte uppdatera miljöinställningar {count} gånger}}",
+  "9cf2fa80a6592dac": "{count, plural, one {Kontrollerade leverantörens användningsgränser {count} gång} other {Kontrollerade leverantörens användningsgränser {count} gånger}}",
+  "5fc23c75319d8883": "{count, plural, one {Försökte kontrollera leverantörens användningsgränser {count} gång} other {Försökte kontrollera leverantörens användningsgränser {count} gånger}}",
   "04360a2f0b44b37b": "{count, plural, one {Kontrollerade teman {count} gång} other {Kontrollerade teman {count} gånger}}",
   "227120bfdd990e37": "{count, plural, one {Försökte kontrollera teman {count} gång} other {Försökte kontrollera teman {count} gånger}}",
   "a16ae702cbb60dde": "{count, plural, one {Valde tema {count} gång} other {Valde tema {count} gånger}}",

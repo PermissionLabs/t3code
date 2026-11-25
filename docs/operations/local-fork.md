@@ -122,6 +122,7 @@ restart once idle. The custom desktop app uses the separately signed desktop bui
 
 ## Fork-only changes
 
+- **Telemetry is opt-in.** Product analytics (`ingest.t3.codes`) and relay tracing stay off unless `T3CODE_TELEMETRY_ENABLED=true`; while off, the server never reads `~/.codex/auth.json` or `~/.claude.json` for telemetry identity. A managed policy can still turn it off.
 - **Unset entries in provider environment variables.** A provider instance's environment row can carry `"unset": "exact"` or `"unset": "prefix"` to remove inherited variables instead of setting one, so a machine can keep human credential paths (`SSH_AUTH_SOCK`, `GIT_ASKPASS`, `OP_*`, …) away from agents without changing the server's own environment or T3 Code's own git. In `settings.json`, a Claude instance looks like this:
 
   ```json

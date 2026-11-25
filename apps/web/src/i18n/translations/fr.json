@@ -263,6 +263,8 @@
   "c70d82623deb2d58": "{count, plural, one {Tentative de vérifier les préférences de l’environnement {count} fois} other {Tentative de vérifier les préférences de l’environnement {count} fois}}",
   "bde8332c22df12b5": "{count, plural, one {Préférences de l’environnement mises à jour {count} fois} other {Préférences de l’environnement mises à jour {count} fois}}",
   "e2130fe5df35d0fc": "{count, plural, one {Tentative de mettre à jour les préférences de l’environnement {count} fois} other {Tentative de mettre à jour les préférences de l’environnement {count} fois}}",
+  "9cf2fa80a6592dac": "{count, plural, one {Limites d’utilisation du fournisseur vérifiées {count} fois} other {Limites d’utilisation du fournisseur vérifiées {count} fois}}",
+  "5fc23c75319d8883": "{count, plural, one {Tentative de vérification des limites d’utilisation du fournisseur {count} fois} other {Tentative de vérification des limites d’utilisation du fournisseur {count} fois}}",
   "04360a2f0b44b37b": "{count, plural, one {Thèmes vérifiés {count} fois} other {Thèmes vérifiés {count} fois}}",
   "227120bfdd990e37": "{count, plural, one {Tentative de vérifier les thèmes {count} fois} other {Tentative de vérifier les thèmes {count} fois}}",
   "a16ae702cbb60dde": "{count, plural, one {Thème défini {count} fois} other {Thème défini {count} fois}}",

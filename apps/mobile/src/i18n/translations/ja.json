@@ -263,6 +263,8 @@
   "c70d82623deb2d58": "{count, plural, other {環境の設定を {count} 回確認しようとしました}}",
   "bde8332c22df12b5": "{count, plural, other {環境の設定を {count} 回更新しました}}",
   "e2130fe5df35d0fc": "{count, plural, other {環境の設定を {count} 回更新しようとしました}}",
+  "9cf2fa80a6592dac": "{count, plural, one {プロバイダーの使用量上限を{count}回確認しました} other {プロバイダーの使用量上限を{count}回確認しました}}",
+  "5fc23c75319d8883": "{count, plural, one {プロバイダーの使用量上限の確認を{count}回試みました} other {プロバイダーの使用量上限の確認を{count}回試みました}}",
   "04360a2f0b44b37b": "{count, plural, other {テーマを {count} 回確認しました}}",
   "227120bfdd990e37": "{count, plural, other {テーマを {count} 回確認しようとしました}}",
   "a16ae702cbb60dde": "{count, plural, other {テーマを {count} 回設定しました}}",

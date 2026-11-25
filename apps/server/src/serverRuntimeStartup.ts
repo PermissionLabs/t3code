@@ -172,7 +172,9 @@ const recordStartupHeartbeat = Effect.gen(function* () {
     threadCount,
     projectCount,
   });
-  yield* analytics.recordOwners(yield* getServerOwners, "server");
+  // Passed as an effect so identity files are read only when telemetry is enabled.
+  const ownersContext = yield* Effect.context<Effect.Services<typeof getServerOwners>>();
+  yield* analytics.recordOwners(Effect.provideContext(getServerOwners, ownersContext), "server");
 });
 
 const getAutoBootstrapThreadModelSelection = (): ModelSelection => ({

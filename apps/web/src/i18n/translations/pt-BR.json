@@ -263,6 +263,8 @@
   "c70d82623deb2d58": "{count, plural, one {Tentou verificar as preferências do ambiente {count} vez} other {Tentou verificar as preferências do ambiente {count} vezes}}",
   "bde8332c22df12b5": "{count, plural, one {Atualizou as preferências do ambiente {count} vez} other {Atualizou as preferências do ambiente {count} vezes}}",
   "e2130fe5df35d0fc": "{count, plural, one {Tentou atualizar as preferências do ambiente {count} vez} other {Tentou atualizar as preferências do ambiente {count} vezes}}",
+  "9cf2fa80a6592dac": "{count, plural, one {Limites de uso do provedor verificados {count} vez} other {Limites de uso do provedor verificados {count} vezes}}",
+  "5fc23c75319d8883": "{count, plural, one {Tentou verificar os limites de uso do provedor {count} vez} other {Tentou verificar os limites de uso do provedor {count} vezes}}",
   "04360a2f0b44b37b": "{count, plural, one {Verificou os temas {count} vez} other {Verificou os temas {count} vezes}}",
   "227120bfdd990e37": "{count, plural, one {Tentou verificar os temas {count} vez} other {Tentou verificar os temas {count} vezes}}",
   "a16ae702cbb60dde": "{count, plural, one {Definiu o tema {count} vez} other {Definiu o tema {count} vezes}}",

@@ -263,6 +263,8 @@
   "c70d82623deb2d58": "{count, plural, other {환경 기본 설정 확인 {count}회 시도함}}",
   "bde8332c22df12b5": "{count, plural, other {환경 기본 설정 {count}회 업데이트함}}",
   "e2130fe5df35d0fc": "{count, plural, other {환경 기본 설정 업데이트 {count}회 시도함}}",
+  "9cf2fa80a6592dac": "{count, plural, one {프로바이더 사용 한도를 {count}번 확인함} other {프로바이더 사용 한도를 {count}번 확인함}}",
+  "5fc23c75319d8883": "{count, plural, one {프로바이더 사용 한도 확인을 {count}번 시도함} other {프로바이더 사용 한도 확인을 {count}번 시도함}}",
   "04360a2f0b44b37b": "{count, plural, other {테마 {count}회 확인함}}",
   "227120bfdd990e37": "{count, plural, other {테마 확인 {count}회 시도함}}",
   "a16ae702cbb60dde": "{count, plural, other {테마 {count}회 설정함}}",

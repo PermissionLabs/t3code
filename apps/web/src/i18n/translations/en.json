@@ -263,6 +263,8 @@
   "c70d82623deb2d58": "{count, plural, one {Tried to check environment preferences {count} time} other {Tried to check environment preferences {count} times}}",
   "bde8332c22df12b5": "{count, plural, one {Updated environment preferences {count} time} other {Updated environment preferences {count} times}}",
   "e2130fe5df35d0fc": "{count, plural, one {Tried to update environment preferences {count} time} other {Tried to update environment preferences {count} times}}",
+  "9cf2fa80a6592dac": "{count, plural, one {Checked provider usage limits {count} time} other {Checked provider usage limits {count} times}}",
+  "5fc23c75319d8883": "{count, plural, one {Tried to check provider usage limits {count} time} other {Tried to check provider usage limits {count} times}}",
   "04360a2f0b44b37b": "{count, plural, one {Checked themes {count} time} other {Checked themes {count} times}}",
   "227120bfdd990e37": "{count, plural, one {Tried to check themes {count} time} other {Tried to check themes {count} times}}",
   "a16ae702cbb60dde": "{count, plural, one {Set the theme {count} time} other {Set the theme {count} times}}",

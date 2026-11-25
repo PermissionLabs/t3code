@@ -263,6 +263,8 @@
   "c70d82623deb2d58": "{count, plural, one {Versucht, Umgebungseinstellungen {count}-mal zu prüfen} other {Versucht, Umgebungseinstellungen {count}-mal zu prüfen}}",
   "bde8332c22df12b5": "{count, plural, one {Umgebungseinstellungen {count}-mal aktualisiert} other {Umgebungseinstellungen {count}-mal aktualisiert}}",
   "e2130fe5df35d0fc": "{count, plural, one {Versucht, Umgebungseinstellungen {count}-mal zu aktualisieren} other {Versucht, Umgebungseinstellungen {count}-mal zu aktualisieren}}",
+  "9cf2fa80a6592dac": "{count, plural, one {Anbieter-Nutzungslimits {count}-mal geprüft} other {Anbieter-Nutzungslimits {count}-mal geprüft}}",
+  "5fc23c75319d8883": "{count, plural, one {Versucht, Anbieter-Nutzungslimits {count}-mal zu prüfen} other {Versucht, Anbieter-Nutzungslimits {count}-mal zu prüfen}}",
   "04360a2f0b44b37b": "{count, plural, one {Designs {count}-mal geprüft} other {Designs {count}-mal geprüft}}",
   "227120bfdd990e37": "{count, plural, one {Versucht, Designs {count}-mal zu prüfen} other {Versucht, Designs {count}-mal zu prüfen}}",
   "a16ae702cbb60dde": "{count, plural, one {Design {count}-mal festgelegt} other {Design {count}-mal festgelegt}}",
