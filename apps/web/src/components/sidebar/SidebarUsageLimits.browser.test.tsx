@@ -45,13 +45,15 @@ vi.mock("../../state/presentation", () => ({
   },
 }));
 
-vi.mock("../../state/server", () => ({
+vi.mock("../../state/server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../state/server")>()),
   serverEnvironment: {
     refreshProviders: {},
   },
 }));
 
-vi.mock("../../state/session", () => ({
+vi.mock("../../state/session", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../state/session")>()),
   readEnvironmentScope: () => false,
 }));
 
