@@ -1,4 +1,5 @@
 import type { EnvironmentId, ForkRolloutTarget } from "@t3tools/contracts";
+import { msg, T, useGT, useMessages } from "gt-react";
 import { useState } from "react";
 
 import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
@@ -13,14 +14,16 @@ import { SettingsRow } from "./settingsLayout";
 const forkVersion = /^[0-9]+\.[0-9]+\.[0-9]+-fork\.[0-9]+\+g[0-9a-f]{10,40}$/;
 
 const targetLabel: Record<ForkRolloutTarget["status"], string> = {
-  pending: "Waiting",
-  updating: "Updating after active work finishes…",
-  done: "Updated",
-  failed: "Failed",
+  pending: msg("Waiting", { $context: "rollout target status" }),
+  updating: msg("Updating after active work finishes…"),
+  done: msg("Updated", { $context: "rollout target status" }),
+  failed: msg("Failed", { $context: "rollout target status" }),
 };
 
 /** Starts a rollout that this server drives across itself and its linked environments. */
 export function ForkServerRollout() {
+  const gt = useGT();
+  const m = useMessages();
   const primaryId = usePrimaryEnvironmentId();
   const { environments } = useEnvironments();
   const primary = environments.find(({ environmentId }) => environmentId === primaryId);
@@ -48,15 +51,17 @@ export function ForkServerRollout() {
 
   return (
     <SettingsRow
-      title="Fork server rollout"
-      description="This server updates the selected servers in order. Each one restarts only after its active turns and terminals finish. The rollout keeps going after you close this page."
+      title={gt("Fork server rollout")}
+      description={gt(
+        "This server updates the selected servers in order. Each one restarts only after its active turns and terminals finish. The rollout keeps going after you close this page.",
+      )}
       control={
         <div className="flex w-80 max-w-full flex-col gap-2">
           {running ? null : (
             <>
               <Input
-                aria-label="Fork release version"
-                placeholder="Fork release version"
+                aria-label={gt("Fork release version")}
+                placeholder={gt("Fork release version")}
                 value={version}
                 onChange={(event) => setVersion(event.currentTarget.value)}
               />
@@ -90,7 +95,7 @@ export function ForkServerRollout() {
                   });
                 }}
               >
-                Deploy to selected servers
+                <T>Deploy to selected servers</T>
               </Button>
             </>
           )}
@@ -101,7 +106,7 @@ export function ForkServerRollout() {
               </span>
               {rollout.targets.map((target) => (
                 <span className="text-muted-foreground text-xs" key={target.environmentId}>
-                  {target.label}: {targetLabel[target.status]}
+                  {target.label}: {m(targetLabel[target.status])}
                   {target.detail ? `: ${target.detail}` : ""}
                 </span>
               ))}
@@ -111,7 +116,7 @@ export function ForkServerRollout() {
                   variant="outline"
                   onClick={() => void cancel({ environmentId: primaryId, input: {} })}
                 >
-                  Stop rollout
+                  <T>Stop rollout</T>
                 </Button>
               ) : null}
             </div>

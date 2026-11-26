@@ -1,3 +1,4 @@
+import { T, useGT, Var } from "gt-react";
 import { memo } from "react";
 
 import { Badge } from "../ui/badge";
@@ -26,6 +27,7 @@ export const LinkOriginBadge = memo(function LinkOriginBadge(props: {
   /** A person here took the linked thread over, so its agents are no longer limited to the link. */
   readonly fenceReleased?: boolean | undefined;
 }) {
+  const gt = useGT();
   const { label, source } = props.origin;
   const open = source?.open;
   const badge = (
@@ -39,7 +41,10 @@ export const LinkOriginBadge = memo(function LinkOriginBadge(props: {
             render: (
               <button
                 type="button"
-                aria-label={`Open ${source?.title ?? ""} on ${label}`}
+                aria-label={gt("Open {title} on {machine}", {
+                  title: source?.title ?? "",
+                  machine: label,
+                })}
                 onClick={open}
               />
             ),
@@ -49,7 +54,11 @@ export const LinkOriginBadge = memo(function LinkOriginBadge(props: {
   return (
     <Tooltip>
       <TooltipTrigger render={badge}>
-        <span className="shrink-0">From {label}</span>
+        <span className="shrink-0">
+          <T>
+            From <Var>{label}</Var>
+          </T>
+        </span>
         {source === null ? null : (
           <>
             <span aria-hidden className="shrink-0 opacity-60">
@@ -63,24 +72,41 @@ export const LinkOriginBadge = memo(function LinkOriginBadge(props: {
       </TooltipTrigger>
       <TooltipPopup side="top" className="max-w-96">
         {source === null ? (
-          <>Started by an agent on {label} through a linked environment.</>
+          <T>
+            Started by an agent on <Var>{label}</Var> through a linked environment.
+          </T>
         ) : (
           <>
-            {source.relation === "delegated" ? "Delegated by " : "Launched by "}
-            the agent in “{source.title}” on {label} through a linked environment.
+            {source.relation === "delegated" ? (
+              <T>
+                Delegated by the agent in “<Var>{source.title}</Var>” on <Var>{label}</Var> through
+                a linked environment.
+              </T>
+            ) : (
+              <T>
+                Launched by the agent in “<Var>{source.title}</Var>” on <Var>{label}</Var> through a
+                linked environment.
+              </T>
+            )}
             <span className="mt-1 block break-all font-mono text-2xs opacity-80">
               {source.link}
             </span>
             {open === undefined ? (
-              <span className="mt-1 block">Connect to {label} to open it.</span>
+              <span className="mt-1 block">
+                <T>
+                  Connect to <Var>{label}</Var> to open it.
+                </T>
+              </span>
             ) : (
-              <span className="mt-1 block">Click to open it.</span>
+              <span className="mt-1 block">
+                <T>Click to open it.</T>
+              </span>
             )}
           </>
         )}
         {props.fenceReleased ? (
           <span className="mt-1 block">
-            You took it over, so its agents now work like this machine's own.
+            <T>You took it over, so its agents now work like this machine's own.</T>
           </span>
         ) : null}
       </TooltipPopup>

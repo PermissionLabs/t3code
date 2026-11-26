@@ -3,12 +3,12 @@ import { AuthProvidersManageScope } from "@t3tools/contracts";
 import { refreshUsageLimits } from "@t3tools/client-runtime/state/usage";
 import {
   collectLimitAccounts,
-  collectLimitNotices,
   collectLimitPools,
   displayLimitWindows,
-  formatDuration,
 } from "@t3tools/shared/usageLimits";
+import { collectLimitNotices, formatDuration } from "@t3tools/shared/usageLimitsCopy";
 import { useNavigate } from "@tanstack/react-router";
+import { T, useGT, useMessages, Var } from "gt-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { useEffect, useEffectEvent, useState } from "react";
 
@@ -29,6 +29,8 @@ export function SidebarUsageLimits() {
   const minute = useNowMinute();
   const now = Date.parse(`${minute}Z`);
   const navigate = useNavigate();
+  const gt = useGT();
+  const m = useMessages();
   const { isMobile, setOpenMobile } = useSidebar();
   const [refreshFailed, setRefreshFailed] = useState(false);
   const { listRef, maxHeight, minHeight, maxHeightLimit, handleProps } =
@@ -41,7 +43,7 @@ export function SidebarUsageLimits() {
   );
   const connectedKey = [...connected.keys()].sort().join(",");
   const pools = collectLimitPools(collectLimitAccounts(connected), now);
-  const notices = collectLimitNotices(connected);
+  const notices = collectLimitNotices(connected, m);
   const offlineCount = presentations.size - connected.size;
 
   const refresh = useEffectEvent(() => {
@@ -83,13 +85,13 @@ export function SidebarUsageLimits() {
 
   return (
     <section
-      aria-label="Subscription limits"
+      aria-label={gt("Subscription limits")}
       className="relative min-w-0 border-t border-sidebar-border pt-2"
     >
       <div
         role="separator"
         aria-orientation="horizontal"
-        aria-label="Resize subscription limits"
+        aria-label={gt("Resize subscription limits")}
         aria-valuenow={maxHeight}
         aria-valuemin={minHeight}
         aria-valuemax={maxHeightLimit}
@@ -103,8 +105,16 @@ export function SidebarUsageLimits() {
         />
       </div>
       <div className="mb-1 flex items-center justify-between px-2 text-2xs text-muted-foreground">
-        <span>Limits · all environments</span>
-        {offlineCount > 0 ? <span>{offlineCount} offline</span> : null}
+        <span>
+          <T>Limits · all environments</T>
+        </span>
+        {offlineCount > 0 ? (
+          <span>
+            <T>
+              <Var>{offlineCount}</Var> offline
+            </T>
+          </span>
+        ) : null}
       </div>
       <div
         ref={listRef}
@@ -121,7 +131,9 @@ export function SidebarUsageLimits() {
               variant="ghost"
               size="sm-multiline"
               className="w-full"
-              aria-label={`${label} subscription limits. Open usage details.`}
+              aria-label={gt("{provider} subscription limits. Open usage details.", {
+                provider: label,
+              })}
               onClick={openLimits}
             >
               <span className="flex w-full min-w-0 flex-col gap-1 py-1">
@@ -137,14 +149,16 @@ export function SidebarUsageLimits() {
                 </span>
                 {windows.map((window) => {
                   const reset = window.resets.find((entry) => entry.restoresPercent > 0);
-                  const resetsIn = reset ? formatDuration(Math.max(0, reset.at - now)) : null;
+                  const resetsIn = reset ? formatDuration(Math.max(0, reset.at - now), m) : null;
                   return (
                     <span
                       key={`${window.kind}:${window.id}`}
                       className="flex min-w-0 items-baseline gap-2 text-2xs tabular-nums"
                     >
                       <span className="truncate text-muted-foreground">{window.label}</span>
-                      <span className="ms-auto shrink-0">{window.remainingPercent}% left</span>
+                      <span className="ms-auto shrink-0">
+                        {gt("{percent}% left", { percent: window.remainingPercent })}
+                      </span>
                       {resetsIn ? (
                         <span className="shrink-0 text-muted-foreground">↻ {resetsIn}</span>
                       ) : null}
@@ -158,10 +172,10 @@ export function SidebarUsageLimits() {
         {pools.length === 0 || notices.length > 0 || refreshFailed ? (
           <Button variant="ghost-muted" size="xs" className="w-full" onClick={openLimits}>
             {notices.length > 0 || refreshFailed
-              ? "Some limits unavailable · Details"
+              ? gt("Some limits unavailable · Details")
               : connected.size === 0
-                ? "Connect to see limits"
-                : "No limits reported · Details"}
+                ? gt("Connect to see limits")
+                : gt("No limits reported · Details")}
           </Button>
         ) : null}
       </div>

@@ -26,6 +26,8 @@ const pullSchema = Schema.Struct({
   head: Schema.Struct({ sha: Schema.String }),
   base: Schema.Struct({ ref: Schema.String }),
   user: actorSchema,
+  merge_commit_sha: Schema.optional(Schema.NullOr(Schema.String)),
+  merged_by: Schema.optional(actorSchema),
 });
 
 const checksSchema = Schema.Struct({
@@ -91,7 +93,17 @@ function checkStatus(
 
 export type WatchDetail = Pick<
   PullRequestDetail,
-  "state" | "baseBranch" | "headSha" | "checks" | "mergeability" | "viewer" | "author"
+  | "state"
+  | "baseBranch"
+  | "headSha"
+  | "checks"
+  | "mergeability"
+  | "viewer"
+  | "author"
+  | "rebaseRequired"
+  | "mergeQueueRemoval"
+  | "mergeCommitSha"
+  | "mergedBy"
 > & { readonly capabilities: Pick<PullRequestDetail["capabilities"], "checksAlwaysReport"> };
 
 export function permissionLabsWatchRepo(host: string, repository: string) {
@@ -154,6 +166,8 @@ export const read = Effect.fn("PermissionLabsWatchReader.read")(function* (
       pull.mergeable === null ? "unknown" : pull.mergeable ? "mergeable" : "conflicting",
     author: actor(pull.user),
     capabilities: {},
+    ...(pull.merged && pull.merge_commit_sha ? { mergeCommitSha: pull.merge_commit_sha } : {}),
+    ...(pull.merged && pull.merged_by ? { mergedBy: actor(pull.merged_by)! } : {}),
   };
   if (detail.state !== "open") return { detail, activity: null };
   if (!/^[a-f0-9]{40}$/i.test(pull.head.sha)) {
